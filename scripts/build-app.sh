@@ -49,4 +49,4 @@ echo "==> Registering with LaunchServices"
 echo
 echo "Installed: $INSTALL_DIR/$APP_NAME.app"
 echo "Make it the default: launch it and accept the prompt, or use"
-echo "  Image Canvas menu > Make Default Image Viewer…"
+echo "  Image Canvas menu > Make Default Viewer…"

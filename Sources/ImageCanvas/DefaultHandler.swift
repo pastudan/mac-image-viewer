@@ -1,12 +1,13 @@
 import AppKit
 import UniformTypeIdentifiers
 
-/// Registers Image Canvas as the default app for common image types.
+/// Registers Image Canvas as the default app for common image and video types.
 @MainActor
 enum DefaultHandler {
     static let types: [UTType] = [
         .jpeg, .png, .heic, .heif, .gif, .webP, .tiff, .bmp,
-    ]
+        .mpeg4Movie, .quickTimeMovie,
+    ] + [UTType("com.apple.m4v-video")].compactMap { $0 }
 
     private static let promptedKey = "didOfferDefaultViewer"
 
@@ -32,8 +33,8 @@ enum DefaultHandler {
             }
             let alert = NSAlert()
             if failures.isEmpty {
-                alert.messageText = "Image Canvas is now your default image viewer"
-                alert.informativeText = "Double-clicking a JPEG, PNG, HEIC, GIF, WebP, TIFF or BMP in Finder will add it to the canvas."
+                alert.messageText = "Image Canvas is now your default viewer"
+                alert.informativeText = "Double-clicking a JPEG, PNG, HEIC, GIF, WebP, TIFF, BMP, MP4, MOV or M4V in Finder will add it to the canvas."
             } else {
                 alert.alertStyle = .warning
                 alert.messageText = "Some file types could not be changed"
@@ -53,8 +54,8 @@ enum DefaultHandler {
         guard Bundle.main.bundleURL.pathExtension == "app", !isDefault else { return }
 
         let alert = NSAlert()
-        alert.messageText = "Make Image Canvas your default image viewer?"
-        alert.informativeText = "Images you double-click in Finder will open here and be added to the canvas. You can change this later from the Image Canvas menu."
+        alert.messageText = "Make Image Canvas your default image and video viewer?"
+        alert.informativeText = "Images and videos you double-click in Finder will open here and be added to the canvas. You can change this later from the Image Canvas menu."
         alert.addButton(withTitle: "Make Default")
         alert.addButton(withTitle: "Not Now")
         if alert.runModal() == .alertFirstButtonReturn {

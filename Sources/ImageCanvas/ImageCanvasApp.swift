@@ -10,7 +10,7 @@ struct ImageCanvasApp: App {
 
     var body: some Scene {
         // A single `Window` (not WindowGroup): opening more files never spawns new windows,
-        // every image just joins the one canvas.
+        // everything joins the one canvas.
         Window("Image Canvas", id: "canvas") {
             CanvasView(model: model)
                 .navigationTitle(title)
@@ -18,7 +18,7 @@ struct ImageCanvasApp: App {
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(after: .appInfo) {
-                Button("Make Default Image Viewer…") { DefaultHandler.makeDefault() }
+                Button("Make Default Viewer…") { DefaultHandler.makeDefault() }
             }
             CommandGroup(replacing: .newItem) {
                 Button("Open…") { openPanel() }
@@ -26,35 +26,59 @@ struct ImageCanvasApp: App {
             }
             CommandGroup(after: .pasteboard) {
                 Divider()
-                Button("Remove Selected Image") { model.removeSelected() }
+                Button("Remove Selected") { model.removeSelected() }
                     .keyboardShortcut(.delete, modifiers: [])
                     .disabled(model.selectedID == nil)
                 Button("Clear Canvas") { model.removeAll() }
                     .keyboardShortcut(.delete, modifiers: [.command, .shift])
-                    .disabled(model.tiles.isEmpty)
+                    .disabled(model.isEmpty)
+            }
+            CommandGroup(after: .toolbar) {
+                Toggle("Crop to Fill Panes", isOn: $model.cropToFill)
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+                Divider()
             }
             CommandMenu("Arrange") {
-                Button("Tile All") { withAnimation(.spring(duration: 0.3)) { model.tileAll() } }
+                Button("Even Out") { model.evenOut() }
                     .keyboardShortcut("g")
-                    .disabled(model.tiles.isEmpty)
+                    .disabled(model.isEmpty)
+                Button(model.zoomedID == nil ? "Zoom Selected" : "Exit Zoom") {
+                    if model.zoomedID != nil { model.exitZoom() }
+                    else if let id = model.selectedID { model.toggleZoom(id) }
+                }
+                .keyboardShortcut(.return, modifiers: [.control, .option])
+                .disabled(model.selectedID == nil && model.zoomedID == nil)
                 Divider()
                 ForEach(snapShortcuts, id: \.zone) { item in
                     Button("Snap Selected: \(item.zone.title)") {
                         guard let id = model.selectedID else { return }
-                        withAnimation(.spring(duration: 0.25)) { model.snap(id, to: item.zone) }
+                        model.snap(id, to: item.zone)
                     }
                     .keyboardShortcut(item.key, modifiers: [.control, .option])
                     .disabled(model.selectedID == nil)
                 }
             }
+            CommandMenu("Playback") {
+                Button(model.selectedVideo?.isPlaying == false ? "Play" : "Pause") {
+                    if let id = model.selectedID { model.togglePlay(id) }
+                }
+                .keyboardShortcut(.space, modifiers: [])
+                .disabled(model.selectedVideo == nil)
+                Button(model.selectedVideo?.isMuted == false ? "Mute" : "Unmute") {
+                    if let id = model.selectedID { model.toggleMute(id) }
+                }
+                .keyboardShortcut("m", modifiers: [])
+                .disabled(model.selectedVideo == nil)
+            }
         }
     }
 
     private var title: String {
-        switch model.tiles.count {
-        case 0: "Image Canvas"
-        case 1: model.tiles[0].name
-        default: "Image Canvas — \(model.tiles.count) images"
+        let tiles = Array(model.tiles.values)
+        switch tiles.count {
+        case 0: return "Image Canvas"
+        case 1: return tiles[0].name
+        default: return "Image Canvas — \(tiles.count) items"
         }
     }
 
@@ -64,7 +88,6 @@ struct ImageCanvasApp: App {
             (.leftHalf, .leftArrow), (.rightHalf, .rightArrow),
             (.topHalf, .upArrow), (.bottomHalf, .downArrow),
             (.topLeft, "u"), (.topRight, "i"), (.bottomLeft, "j"), (.bottomRight, "k"),
-            (.full, .return),
         ]
     }
 
@@ -73,7 +96,7 @@ struct ImageCanvasApp: App {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.image]
+        panel.allowedContentTypes = [.image, .movie]
         if panel.runModal() == .OK {
             model.add(urls: panel.urls)
         }
@@ -91,7 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Let the window appear first, then (once) offer to take over image files.
+        // Let the window appear first, then (once) offer to take over image and video files.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             MainActor.assumeIsolated { DefaultHandler.offerOnFirstLaunch() }
         }

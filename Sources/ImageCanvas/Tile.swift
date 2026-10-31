@@ -1,40 +1,82 @@
 import AppKit
-import CanvasCore
+import AVFoundation
 import ImageIO
+import Observation
 import UniformTypeIdentifiers
 
-struct Tile: Identifiable {
-    let id = UUID()
-    let url: URL
-    let image: NSImage
-    /// Width / height of the decoded image.
-    let aspect: CGFloat
-
-    /// Normalized (0...1) frame within the canvas, top-left origin.
-    var frame: CGRect
-    /// Set while the tile is snapped to a half, quadrant or the full canvas.
-    var zone: SnapZone?
-    /// Normalized size to return to when a snapped tile is dragged away.
-    var restoreSize: CGSize?
-    /// Frame/zone to return to when toggling out of full-canvas via double-click.
-    var preFill: (frame: CGRect, zone: SnapZone?)?
-
-    var name: String { url.lastPathComponent }
+enum MediaKind {
+    case image, video
 }
 
-enum ImageLoader {
-    /// Longest edge we decode to. Keeps 50MP photos from eating gigabytes.
+enum TileContent {
+    case loading
+    case image(NSImage)
+    case video(LoopingVideo)
+}
+
+struct Tile: Identifiable {
+    let id: UUID
+    let url: URL
+    let kind: MediaKind
+    var content: TileContent = .loading
+
+    var name: String { url.lastPathComponent }
+
+    var video: LoopingVideo? {
+        if case .video(let v) = content { v } else { nil }
+    }
+}
+
+/// A muted, endlessly looping video.
+@MainActor
+@Observable
+final class LoopingVideo {
+    let player = AVQueuePlayer()
+    private var looper: AVPlayerLooper?
+    private(set) var isPlaying = true
+    private(set) var isMuted = true
+
+    init(asset: AVAsset) {
+        player.isMuted = true
+        // Several looping clips shouldn't keep the display awake forever.
+        player.preventsDisplaySleepDuringVideoPlayback = false
+        looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(asset: asset))
+        player.play()
+    }
+
+    func togglePlay() {
+        isPlaying ? player.pause() : player.play()
+        isPlaying.toggle()
+    }
+
+    func setMuted(_ muted: Bool) {
+        isMuted = muted
+        player.isMuted = muted
+    }
+
+    func stop() {
+        player.pause()
+        looper?.disableLooping()
+        looper = nil
+        player.removeAllItems()
+    }
+}
+
+enum MediaLoader {
+    /// Longest edge images are decoded to. Keeps 50MP photos from eating gigabytes.
     static let maxPixelSize = 3000
 
-    static func isImage(_ url: URL) -> Bool {
+    static func kind(of url: URL) -> MediaKind? {
         guard let type = (try? url.resourceValues(forKeys: [.contentTypeKey]))?.contentType
             ?? UTType(filenameExtension: url.pathExtension)
-        else { return false }
-        return type.conforms(to: .image)
+        else { return nil }
+        if type.conforms(to: .image) { return .image }
+        if type.conforms(to: .movie) || type.conforms(to: .video) { return .video }
+        return nil
     }
 
     /// Decodes a downsampled, orientation-corrected image. Safe to call off the main thread.
-    static func load(_ url: URL) -> CGImage? {
+    static func loadImage(_ url: URL) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
