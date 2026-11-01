@@ -26,7 +26,7 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
 
 ## Using it
 
-- To add files, double-click them in Finder, drop them onto the window, or use **File > Open** (Cmd-O). Each new file halves the largest pane.
+- To add files, double-click them in Finder, drop them onto the window, or use **File > Open** (Cmd-O). Each time files are added, every pane is evened out to the same size.
 - **Drag a pane** and a blue preview shows where it will land:
   - Over another pane's **edge**, it splits that pane and takes that side.
   - Over another pane's **centre**, the two panes swap places.

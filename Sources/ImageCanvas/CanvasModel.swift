@@ -49,30 +49,37 @@ final class CanvasModel {
 
     // MARK: Adding
 
-    /// Adds images and videos as tiles. With no target each one halves the largest tile;
-    /// with a target (a Finder drop) the first lands there and the rest stack beside it.
+    /// Adds images and videos as tiles, then evens out the whole canvas so every pane gets
+    /// the same share. New files go last in reading order; a Finder drop puts them at the
+    /// drop position in that order instead.
     func add(urls: [URL], target: DropTarget<UUID>? = nil) {
-        var previous: UUID?
+        var added: [(id: UUID, url: URL, kind: MediaKind)] = []
         for url in urls {
             guard let kind = MediaLoader.kind(of: url) else { continue }
             let id = UUID()
             tiles[id] = Tile(id: id, url: url, kind: kind)
-            withAnimation(Self.spring) {
-                if let previous, let layout {
-                    let rect = layout.frames(in: canvasRect)[previous] ?? .zero
-                    self.layout = layout.inserting(id, beside: previous,
-                                                   on: rect.width >= rect.height ? .right : .bottom)
-                } else if let target, let layout {
-                    self.layout = layout.applying(target, moving: id, in: canvasSize)
-                } else {
-                    self.layout = Layout.adding(id, to: layout, in: canvasSize)
-                }
-                zoomedID = nil
-            }
-            if target != nil { previous = id }
-            selectedID = id
-            load(id, url: url, kind: kind)
+            added.append((id, url, kind))
         }
+        guard let first = added.first else { return }
+        let newIDs = added.map(\.id)
+
+        var order = layout?.ids ?? []
+        if let target, let layout {
+            // Use the drop target only to decide where the new files sit in the order.
+            order = layout.applying(target, moving: first.id, in: canvasSize).ids
+            if let at = order.firstIndex(of: first.id) {
+                order.insert(contentsOf: newIDs.dropFirst(), at: at + 1)
+            }
+        } else {
+            order += newIDs
+        }
+
+        withAnimation(Self.spring) {
+            layout = Layout.balanced(order, in: canvasSize)
+            zoomedID = nil
+        }
+        selectedID = newIDs.last
+        for item in added { load(item.id, url: item.url, kind: item.kind) }
     }
 
     private func load(_ id: UUID, url: URL, kind: MediaKind) {
@@ -95,6 +102,7 @@ final class CanvasModel {
     private func failed(_ id: UUID, _ url: URL) {
         NSLog("Image Canvas: could not open \(url.path)")
         remove(id)
+        evenOut() // keep the panes even after a file that never loaded drops out
     }
 
     // MARK: Removing
