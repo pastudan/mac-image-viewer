@@ -50,6 +50,12 @@ final class LoopingVideo {
     private var pendingSeek: CMTime?
     private var isSeeking = false
 
+    /// Playback position, published only while someone is watching (the hover bar), so
+    /// idle panes don't redraw ten times a second.
+    private(set) var position: Double = 0
+    private var timeObserver: Any?
+    private var watchers = 0
+
     init(asset: AVAsset, duration: Double) {
         self.duration = duration
         player.isMuted = true
@@ -57,6 +63,28 @@ final class LoopingVideo {
         player.preventsDisplaySleepDuringVideoPlayback = false
         looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(asset: asset))
         player.play()
+    }
+
+    /// Starts publishing `position`. Balance with `stopWatchingPosition()`.
+    func startWatchingPosition() {
+        watchers += 1
+        position = currentSeconds
+        guard timeObserver == nil else { return }
+        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 10),
+                                                      queue: .main) { [weak self] time in
+            MainActor.assumeIsolated {
+                // Each loop is a fresh item, so the clock already restarts at 0 per loop.
+                guard let self, time.seconds.isFinite else { return }
+                self.position = min(max(time.seconds, 0), self.duration > 0 ? self.duration : time.seconds)
+            }
+        }
+    }
+
+    func stopWatchingPosition() {
+        watchers = max(watchers - 1, 0)
+        guard watchers == 0, let timeObserver else { return }
+        player.removeTimeObserver(timeObserver)
+        self.timeObserver = nil
     }
 
     var currentSeconds: Double {
@@ -112,6 +140,9 @@ final class LoopingVideo {
     }
 
     func stop() {
+        if let timeObserver { player.removeTimeObserver(timeObserver) }
+        timeObserver = nil
+        watchers = 0
         player.pause()
         looper?.disableLooping()
         looper = nil

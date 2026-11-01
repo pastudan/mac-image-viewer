@@ -36,6 +36,8 @@ final class InteractionNSView: NSView {
         case pan(UUID, last: CGPoint)
         case divider(Layout.Divider)
         case control(UUID, TileControl)
+        /// Mouse down on a video's seek track: dragging scrubs.
+        case seek(UUID)
     }
 
     private var gesture: Gesture = .none
@@ -94,6 +96,11 @@ final class InteractionNSView: NSView {
             gesture = .control(hit.id, hit.control)
             return
         }
+        if clickCount == 1, let hit = model.seekTrack(at: point), model.beginScrub(hit.id) {
+            model.scrub(toFraction: hit.fraction)
+            gesture = .seek(hit.id)
+            return
+        }
         if let divider = model.divider(near: point) {
             gesture = .divider(divider)
             model.activeDividerPath = divider.path
@@ -137,6 +144,8 @@ final class InteractionNSView: NSView {
             gesture = .pan(id, last: point)
         case let .divider(divider):
             model.setRatio(of: divider, to: point)
+        case let .seek(id):
+            if let bar = model.videoBar(for: id) { model.scrub(toFraction: bar.fraction(atX: point.x)) }
         case .control, .none:
             break
         }
@@ -146,6 +155,8 @@ final class InteractionNSView: NSView {
         switch gesture {
         case .move:
             model.dragEnded()
+        case .seek:
+            model.endScrub()
         case let .control(id, control):
             if let hit = model.control(at: point), hit.id == id, hit.control == control {
                 model.perform(control, on: id)

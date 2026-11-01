@@ -26,6 +26,7 @@ enum SelfTest {
                 try await run(files: Array(images.prefix(4)), record: record)
                 if let video = videos.first {
                     try await runScrub(video: video, record: record)
+                    try await runHoverSeek(video: video, record: record)
                     try await runLock(video: video, image: images.first, record: record)
                 }
             } catch {
@@ -36,14 +37,28 @@ enum SelfTest {
             if args.contains("--hold") {
                 // Leave a zoomed, hovered layout on screen for a window-only screenshot.
                 let model = CanvasModel.shared
+                if args.contains("--hold-hover") {
+                    // Two videos side by side: the first hovered, the second showing just its runtime.
+                    model.removeAll()
+                    model.add(urls: Array(videos.prefix(2)))
+                    for _ in 0..<50 where !model.tiles.values.allSatisfy({ ($0.video?.duration ?? 0) > 0 }) {
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                    try? await Task.sleep(for: .milliseconds(1500)) // let the hovered clip play a little
+                }
                 model.evenOut()
                 if args.contains("--hold-locked") {
                     AppLock.shared.lock()
                 } else if let id = model.layout?.ids.first, let pane = model.paneRect(id) {
                     if model.tiles[id]?.video != nil {
-                        // Show the seek bar mid-scrub.
-                        model.beginScrub(id)
-                        model.updateScrub(by: pane.width * 0.4)
+                        if args.contains("--hold-hover") {
+                            // Hover the first video; any other video shows just its runtime.
+                            model.hoveredID = id
+                        } else {
+                            // Show the seek bar mid-scrub.
+                            model.beginScrub(id)
+                            model.updateScrub(by: pane.width * 0.4)
+                        }
                     } else {
                         model.zoom(id, by: 3, at: CGPoint(x: pane.midX, y: pane.midY))
                         model.hoveredID = id
@@ -145,6 +160,82 @@ enum SelfTest {
         record("successful unlock shows canvas and resumes video",
                !lock.isLocked && player.player.rate > 0 && InteractionNSView.current?.window != nil,
                "locked=\(lock.isLocked) rate=\(player.player.rate)")
+    }
+
+    /// Mouse hover shows the video bar; clicking and dragging on its track seeks.
+    /// Uses real NSEvents sent through the window, like the click checks.
+    private static func runHoverSeek(video: URL, record: (String, Bool, String) -> Void) async throws {
+        let model = CanvasModel.shared
+        model.removeAll()
+        model.add(urls: [video])
+        for _ in 0..<100 where !(model.tiles.values.first?.video.map { $0.duration > 0 } ?? false) {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        guard let view = InteractionNSView.current, let window = view.window,
+              let id = model.layout?.ids.first, let player = model.tiles[id]?.video,
+              let bar = model.videoBar(for: id), let pane = model.paneRect(id) else {
+            throw Failure(description: "video never loaded")
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        func send(_ type: NSEvent.EventType, _ point: CGPoint) {
+            let event = NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil),
+                                           modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: window.windowNumber, context: nil,
+                                           eventNumber: 0, clickCount: 1, pressure: 1)!
+            if type == .mouseMoved { view.mouseMoved(with: event) } else { window.sendEvent(event) }
+        }
+
+        // Runtime always known; the bar layout has room for times on a pane this size.
+        record("video pane has runtime and full bar layout",
+               bar.durationLabel != nil && bar.currentLabel != nil && player.duration > 9,
+               String(format: "duration=%.2f runtime=%@ pane=%.0fx%.0f", player.duration,
+                      ScrubMath.timecode(player.duration), pane.width, pane.height))
+
+        // Hovering marks the pane hovered (the bar is drawn for the hovered pane).
+        send(.mouseMoved, CGPoint(x: pane.midX, y: pane.midY))
+        let hovered = model.hoveredID == id
+        send(.mouseMoved, CGPoint(x: -50, y: -50))
+        view.mouseExited(with: NSEvent.mouseEvent(with: .mouseMoved, location: .zero, modifierFlags: [],
+                                                   timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                                                   eventNumber: 0, clickCount: 0, pressure: 0)!)
+        let unhovered = model.hoveredID == nil
+        record("hover shows the bar; leaving hides it", hovered && unhovered,
+               "hovered=\(hovered) clearedOnExit=\(unhovered)")
+
+        // Click on the track at 25%: jumps there, pauses while held; drag to 75%; release resumes.
+        send(.mouseMoved, CGPoint(x: pane.midX, y: pane.midY))
+        let x25 = bar.track.minX + bar.track.width * 0.25, x75 = bar.track.minX + bar.track.width * 0.75
+        let layoutBefore = model.layout
+        send(.leftMouseDown, CGPoint(x: x25, y: bar.track.midY + 6))
+        let downTime = model.scrub?.time ?? -1
+        let pausedWhileHeld = player.player.rate == 0
+        for i in 1...8 {
+            send(.leftMouseDragged, CGPoint(x: x25 + (x75 - x25) * CGFloat(i) / 8, y: bar.track.midY))
+        }
+        let dragTime = model.scrub?.time ?? -1
+        try await Task.sleep(for: .milliseconds(400))
+        let playerAtDrag = player.currentSeconds
+        send(.leftMouseUp, CGPoint(x: x75, y: bar.track.midY))
+        try await Task.sleep(for: .milliseconds(200))
+        let d = player.duration
+        let ok = abs(downTime - d * 0.25) < 0.05 && abs(dragTime - d * 0.75) < 0.05
+            && abs(playerAtDrag - dragTime) < 0.1 && pausedWhileHeld
+            && model.scrub == nil && player.player.rate > 0 && model.layout == layoutBefore && model.draggingID == nil
+        record("click and drag on the seek bar seeks without moving the pane", ok,
+               String(format: "down=%.2f (want %.2f) drag=%.2f (want %.2f) player=%.2f pausedWhileHeld=%@ resumed=%@ paneMoved=%@",
+                      downTime, d * 0.25, dragTime, d * 0.75, playerAtDrag, "\(pausedWhileHeld)",
+                      "\(player.player.rate > 0)", "\(model.layout != layoutBefore)"))
+
+        // Play/pause button in the bar still works.
+        if let play = bar.playPause {
+            send(.leftMouseDown, CGPoint(x: play.midX, y: play.midY))
+            send(.leftMouseUp, CGPoint(x: play.midX, y: play.midY))
+            let paused = !player.isPlaying && player.player.rate == 0
+            send(.leftMouseDown, CGPoint(x: play.midX, y: play.midY))
+            send(.leftMouseUp, CGPoint(x: play.midX, y: play.midY))
+            record("play/pause button in the bar toggles", paused && player.isPlaying,
+                   "pausedAfterFirst=\(paused) playingAfterSecond=\(player.isPlaying)")
+        }
     }
 
     /// Two-finger scrub, driven through the same handler `scrollWheel(with:)` calls.

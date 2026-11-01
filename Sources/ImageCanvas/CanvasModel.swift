@@ -86,6 +86,19 @@ final class CanvasModel {
         return hit.map { (id, $0.key) }
     }
 
+    /// The control bar layout for a video pane (nil for images and tiny panes).
+    func videoBar(for id: UUID) -> VideoBarLayout? {
+        guard tiles[id]?.video != nil, let pane = paneRect(id) else { return nil }
+        return VideoBarLayout(pane: pane)
+    }
+
+    /// The video whose seek track is under `point`, with where along the track (0...1).
+    func seekTrack(at point: CGPoint) -> (id: UUID, fraction: Double)? {
+        guard let id = tileID(at: point), (tiles[id]?.video?.duration ?? 0) > 0,
+              let bar = videoBar(for: id), bar.trackHitArea.contains(point) else { return nil }
+        return (id, bar.fraction(atX: point.x))
+    }
+
     func perform(_ control: TileControl, on id: UUID) {
         switch control {
         case .close: remove(id)
@@ -261,6 +274,14 @@ final class CanvasModel {
     func updateScrub(by fingerDistance: CGFloat) {
         guard var s = scrub, let video = tiles[s.id]?.video else { return }
         s.time = ScrubMath.advance(s.time, by: fingerDistance, paneWidth: s.paneWidth, duration: s.duration)
+        scrub = s
+        video.seek(to: s.time)
+    }
+
+    /// Mouse seeking on the bar: jumps to a point along the track.
+    func scrub(toFraction fraction: Double) {
+        guard var s = scrub, let video = tiles[s.id]?.video else { return }
+        s.time = min(max(fraction, 0), 1) * s.duration
         scrub = s
         video.seek(to: s.time)
     }

@@ -13,7 +13,10 @@ struct TileView: View {
     private var isSelected: Bool { model.selectedID == tile.id && model.tiles.count > 1 }
     private var isDragging: Bool { model.draggingID == tile.id }
     private var scrub: CanvasModel.Scrub? { model.scrub?.id == tile.id ? model.scrub : nil }
-    private var showsChrome: Bool { model.hoveredID == tile.id && model.draggingID == nil && scrub == nil }
+    private var isHovered: Bool { model.hoveredID == tile.id && model.draggingID == nil }
+    private var showsChrome: Bool { isHovered && scrub == nil }
+    /// The full video bar: while hovering, and while scrubbing (trackpad or mouse).
+    private var showsVideoBar: Bool { isHovered || scrub != nil }
 
     var body: some View {
         let size = CGSize(width: max(pane.width, 1), height: max(pane.height, 1))
@@ -25,10 +28,15 @@ struct TileView: View {
                 Chrome(tile: tile, size: size, zoom: tile.zoom)
                     .transition(.opacity)
             }
-            if let scrub {
-                SeekBar(time: scrub.time, duration: scrub.duration, width: size.width)
-                    .frame(width: size.width, height: size.height, alignment: .bottom)
-                    .transition(.opacity)
+            if let video = tile.video, video.duration > 0 {
+                if showsVideoBar {
+                    VideoBar(video: video, scrubTime: scrub?.time, size: size)
+                        .transition(.opacity)
+                } else {
+                    RuntimeBadge(duration: video.duration)
+                        .frame(width: size.width, height: size.height, alignment: .bottomTrailing)
+                        .transition(.opacity)
+                }
             }
         }
         .frame(width: size.width, height: size.height)
@@ -44,6 +52,7 @@ struct TileView: View {
         .offset(isDragging ? model.dragTranslation : .zero)
         .position(x: pane.midX, y: pane.midY)
         .animation(.easeOut(duration: 0.12), value: showsChrome)
+        .animation(.easeOut(duration: 0.12), value: showsVideoBar)
     }
 
     /// Shrink big panes while dragging so the drop preview stays visible underneath.
@@ -105,64 +114,88 @@ private struct Chrome: View {
                     .frame(maxWidth: max(size.width - close.maxX - 12, 0), alignment: .leading)
                     .offset(x: close.maxX + 6, y: close.minY + 3)
             }
-            if let video = tile.video, let play = rects[.playPause], let mute = rects[.mute] {
-                LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .top, endPoint: .bottom)
-                    .frame(width: size.width, height: 40)
-                    .offset(y: size.height - 40)
-                Image(systemName: video.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(width: play.width, height: play.height)
-                    .position(x: play.midX, y: play.midY)
-                Image(systemName: video.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(width: mute.width, height: mute.height)
-                    .position(x: mute.midX, y: mute.midY)
-            }
         }
         .foregroundStyle(.white)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
     }
 }
 
-/// The temporary seek bar shown while two fingers are scrubbing a video.
-private struct SeekBar: View {
-    let time: Double
+/// The runtime, always shown in the corner of a video pane.
+private struct RuntimeBadge: View {
     let duration: Double
-    let width: CGFloat
 
     var body: some View {
-        let progress = duration > 0 ? min(max(time / duration, 0), 1) : 0
-        let compact = width < 260
-        VStack(spacing: 6) {
-            if !compact {
-                HStack {
-                    Text(ScrubMath.timecode(time))
-                    Spacer()
-                    Text(ScrubMath.timecode(duration))
-                        .foregroundStyle(.white.opacity(0.7))
-                }
-                .font(.system(size: 12, weight: .semibold).monospacedDigit())
+        Text(ScrubMath.timecode(duration))
+            .font(.system(size: 11, weight: .semibold).monospacedDigit())
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(.black.opacity(0.6)))
+            .padding(6)
+    }
+}
+
+/// Bottom control bar of a video pane: play/pause, mute, current time, seek track and
+/// runtime. Shown on hover and while scrubbing. Placed with the shared `VideoBarLayout`,
+/// which `InteractionNSView` also uses for clicks.
+private struct VideoBar: View {
+    let video: LoopingVideo
+    /// Set while scrubbing; otherwise the live playback position is shown.
+    let scrubTime: Double?
+    let size: CGSize
+
+    var body: some View {
+        Group {
+            if let bar = VideoBarLayout(pane: CGRect(origin: .zero, size: size)) {
+                content(bar)
             }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.28))
-                    Capsule().fill(.white)
-                        .frame(width: max(geo.size.width * progress, 4))
-                    Circle().fill(.white)
-                        .frame(width: 12, height: 12)
-                        .shadow(color: .black.opacity(0.4), radius: 2)
-                        .offset(x: geo.size.width * progress - 6)
-                }
-                .frame(height: 4)
-                .frame(maxHeight: .infinity)
-            }
-            .frame(height: 12)
         }
+        .onAppear { video.startWatchingPosition() }
+        .onDisappear { video.stopWatchingPosition() }
+    }
+
+    private func content(_ bar: VideoBarLayout) -> some View {
+        let time = scrubTime ?? video.position
+        let progress = video.duration > 0 ? min(max(time / video.duration, 0), 1) : 0
+        return ZStack(alignment: .topLeading) {
+            LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
+                .frame(width: bar.strip.width, height: bar.strip.height)
+                .offset(x: bar.strip.minX, y: bar.strip.minY)
+            if let play = bar.playPause {
+                Image(systemName: video.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: play.width, height: play.height)
+                    .position(x: play.midX, y: play.midY)
+            }
+            if let mute = bar.mute {
+                Image(systemName: video.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: mute.width, height: mute.height)
+                    .position(x: mute.midX, y: mute.midY)
+            }
+            if let current = bar.currentLabel, let total = bar.durationLabel {
+                Text(ScrubMath.timecode(time))
+                    .frame(width: current.width, height: current.height, alignment: .leading)
+                    .position(x: current.midX, y: current.midY)
+                Text(ScrubMath.timecode(video.duration))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .frame(width: total.width, height: total.height, alignment: .trailing)
+                    .position(x: total.midX, y: total.midY)
+            }
+            Capsule().fill(.white.opacity(0.3))
+                .frame(width: bar.track.width, height: bar.track.height)
+                .offset(x: bar.track.minX, y: bar.track.minY)
+            Capsule().fill(.white)
+                .frame(width: max(bar.track.width * progress, bar.track.height), height: bar.track.height)
+                .offset(x: bar.track.minX, y: bar.track.minY)
+            Circle().fill(.white)
+                .frame(width: 12, height: 12)
+                .shadow(color: .black.opacity(0.4), radius: 2)
+                .position(x: bar.track.minX + bar.track.width * progress, y: bar.track.midY)
+        }
+        .font(.system(size: 11, weight: .semibold).monospacedDigit())
         .foregroundStyle(.white)
-        .padding(.horizontal, 12)
-        .padding(.top, 18)
-        .padding(.bottom, 10)
-        .background(LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom))
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
     }
 }
 
