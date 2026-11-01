@@ -16,8 +16,12 @@ final class CanvasModel {
     private(set) var tiles: [UUID: Tile] = [:]
     private(set) var layout: Layout?
     var selectedID: UUID?
+    /// Pane under the pointer; its hover controls are shown.
+    var hoveredID: UUID?
+    /// Divider under the pointer or being dragged, by its path in the layout tree.
+    var activeDividerPath: [Bool]?
     /// Double-clicked tile shown over the whole canvas; the layout underneath is untouched.
-    private(set) var zoomedID: UUID?
+    private(set) var expandedID: UUID?
     /// Crop media to fill each tile instead of letterboxing.
     var cropToFill = false
     /// Current canvas size in points, kept up to date by CanvasView.
@@ -34,17 +38,51 @@ final class CanvasModel {
     private(set) var dropPreview: CGRect?
 
     static let spring = Animation.spring(duration: 0.3, bounce: 0.12)
+    /// Half the width of the dark "lead" line between panes.
+    static let gutter: CGFloat = 1.5
     private static let incomingID = UUID()
 
     var canvasRect: CGRect { CGRect(origin: .zero, size: canvasSize) }
     var isEmpty: Bool { tiles.isEmpty }
     var selectedVideo: LoopingVideo? { selectedID.flatMap { tiles[$0]?.video } }
 
-    /// Tile rects for drawing, with the zoomed tile (if any) covering the canvas.
+    // MARK: Geometry
+
+    /// Tile slots for drawing, with the expanded tile (if any) covering the canvas.
     func frames() -> [UUID: CGRect] {
         var frames = layout?.frames(in: canvasRect) ?? [:]
-        if let zoomedID { frames[zoomedID] = canvasRect }
+        if let expandedID { frames[expandedID] = canvasRect }
         return frames
+    }
+
+    /// The visible pane for a tile: its slot minus the lead line.
+    func paneRect(_ id: UUID) -> CGRect? {
+        frames()[id]?.insetBy(dx: Self.gutter, dy: Self.gutter)
+    }
+
+    /// The tile under `point`. This is the only place clicks are mapped to tiles.
+    func tileID(at point: CGPoint) -> UUID? {
+        if let expandedID { return canvasRect.contains(point) ? expandedID : nil }
+        return layout?.leaf(at: point, in: canvasRect)
+    }
+
+    func divider(near point: CGPoint) -> Layout.Divider? {
+        guard expandedID == nil else { return nil }
+        return layout?.divider(near: point, in: canvasRect)
+    }
+
+    func control(at point: CGPoint) -> (id: UUID, control: TileControl)? {
+        guard let id = tileID(at: point), let pane = paneRect(id), let tile = tiles[id] else { return nil }
+        let hit = TileChrome.rects(in: pane, hasVideo: tile.video != nil).first { $0.value.contains(point) }
+        return hit.map { (id, $0.key) }
+    }
+
+    func perform(_ control: TileControl, on id: UUID) {
+        switch control {
+        case .close: remove(id)
+        case .playPause: togglePlay(id)
+        case .mute: toggleMute(id)
+        }
     }
 
     // MARK: Adding
@@ -76,7 +114,7 @@ final class CanvasModel {
 
         withAnimation(Self.spring) {
             layout = Layout.balanced(order, in: canvasSize)
-            zoomedID = nil
+            expandedID = nil
         }
         selectedID = newIDs.last
         for item in added { load(item.id, url: item.url, kind: item.kind) }
@@ -101,6 +139,7 @@ final class CanvasModel {
 
     private func failed(_ id: UUID, _ url: URL) {
         NSLog("Image Canvas: could not open \(url.path)")
+        guard tiles[id] != nil else { return }
         remove(id)
         evenOut() // keep the panes even after a file that never loaded drops out
     }
@@ -112,9 +151,10 @@ final class CanvasModel {
         tiles[id] = nil
         withAnimation(Self.spring) {
             layout = layout?.removing(id)
-            if zoomedID == id { zoomedID = nil }
+            if expandedID == id { expandedID = nil }
         }
         if selectedID == id { selectedID = layout?.ids.last }
+        if hoveredID == id { hoveredID = nil }
     }
 
     func removeSelected() {
@@ -126,7 +166,9 @@ final class CanvasModel {
         tiles.removeAll()
         layout = nil
         selectedID = nil
-        zoomedID = nil
+        hoveredID = nil
+        expandedID = nil
+        activeDividerPath = nil
     }
 
     // MARK: Arranging
@@ -138,20 +180,21 @@ final class CanvasModel {
     }
 
     func snap(_ id: UUID, to zone: SnapZone) {
-        if zone == .full { return toggleZoom(id) }
+        if zone == .full { return toggleExpand(id) }
         withAnimation(Self.spring) {
-            zoomedID = nil
+            expandedID = nil
             layout = Layout.snapping(id, to: zone, in: layout)
         }
     }
 
-    func toggleZoom(_ id: UUID) {
+    /// Double-click: show one pane over the whole canvas, or put it back.
+    func toggleExpand(_ id: UUID) {
         selectedID = id
-        withAnimation(Self.spring) { zoomedID = zoomedID == id ? nil : id }
+        withAnimation(Self.spring) { expandedID = expandedID == id ? nil : id }
     }
 
-    func exitZoom() {
-        withAnimation(Self.spring) { zoomedID = nil }
+    func collapse() {
+        withAnimation(Self.spring) { expandedID = nil }
     }
 
     func setRatio(of divider: Layout.Divider, to point: CGPoint) {
@@ -160,6 +203,29 @@ final class CanvasModel {
             ? (point.x - c.minX) / max(c.width, 1)
             : (point.y - c.minY) / max(c.height, 1)
         layout = layout?.settingRatio(ratio, at: divider.path)
+    }
+
+    // MARK: Pinch zoom (inside a pane)
+
+    func zoom(_ id: UUID, by factor: CGFloat, at point: CGPoint) {
+        guard let pane = paneRect(id), let current = tiles[id]?.zoom else { return }
+        let local = CGPoint(x: point.x - pane.minX, y: point.y - pane.minY)
+        tiles[id]?.zoom = current.zoomed(by: factor, at: local, in: pane.size)
+    }
+
+    /// Zooms around the centre of the pane (menu and keyboard).
+    func zoomSelected(by factor: CGFloat) {
+        guard let id = selectedID, let pane = paneRect(id) else { return }
+        withAnimation(.easeOut(duration: 0.15)) { zoom(id, by: factor, at: CGPoint(x: pane.midX, y: pane.midY)) }
+    }
+
+    func pan(_ id: UUID, by delta: CGSize) {
+        guard let pane = paneRect(id), let current = tiles[id]?.zoom, current.isZoomed else { return }
+        tiles[id]?.zoom = current.panned(by: delta, in: pane.size)
+    }
+
+    func resetZoom(_ id: UUID) {
+        withAnimation(.easeOut(duration: 0.2)) { tiles[id]?.zoom = .identity }
     }
 
     // MARK: Video
@@ -177,7 +243,7 @@ final class CanvasModel {
     // MARK: Dragging tiles
 
     func dragChanged(_ id: UUID, start: CGPoint, location: CGPoint, translation: CGSize) {
-        guard zoomedID == nil, let layout else { return }
+        guard expandedID == nil, let layout else { return }
         if draggingID == nil {
             draggingID = id
             selectedID = id
@@ -234,5 +300,47 @@ final class CanvasModel {
             withAnimation(.easeOut(duration: 0.15)) { dropPreview = nil }
         }
         return externalTarget
+    }
+
+    // MARK: Saved layouts
+
+    func makeDocument(name: String) -> LayoutDocument {
+        LayoutDocument(name: name, savedAt: Date(), cropToFill: cropToFill, layout: layout) { id in
+            tiles[id].map { LayoutDocument.Item(path: $0.url.path, zoom: $0.zoom) }
+        }
+    }
+
+    /// Replaces the canvas with a saved layout. Returns the paths that no longer exist;
+    /// their panes are dropped and their neighbours expand into the space.
+    @discardableResult
+    func apply(_ document: LayoutDocument) -> [String] {
+        removeAll()
+        cropToFill = document.cropToFill
+        var ids: [Int: UUID] = [:]
+        var missing: [String] = []
+        for (index, item) in document.items.enumerated() {
+            let url = URL(fileURLWithPath: item.path)
+            guard FileManager.default.fileExists(atPath: item.path), let kind = MediaLoader.kind(of: url) else {
+                missing.append(item.path)
+                continue
+            }
+            let id = UUID()
+            var tile = Tile(id: id, url: url, kind: kind)
+            tile.zoom = item.zoom
+            tiles[id] = tile
+            ids[index] = id
+        }
+        var restored = document.layout?.compactMapIDs { ids[$0] }
+        // Items the saved tree didn't mention still get a pane.
+        let placed = Set(restored?.ids ?? [])
+        for index in ids.keys.sorted() where !placed.contains(ids[index]!) {
+            restored = Layout.adding(ids[index]!, to: restored, in: canvasSize)
+        }
+        layout = restored
+        selectedID = layout?.ids.first
+        for (_, id) in ids.sorted(by: { $0.key < $1.key }) {
+            if let tile = tiles[id] { load(id, url: tile.url, kind: tile.kind) }
+        }
+        return missing
     }
 }

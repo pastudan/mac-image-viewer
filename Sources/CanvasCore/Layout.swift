@@ -2,7 +2,7 @@ import CoreGraphics
 
 /// How a split divides its space. `columns` puts children side by side (left | right);
 /// `rows` stacks them (top / bottom).
-public enum Axis: Sendable, Equatable {
+public enum Axis: String, Sendable, Equatable, Codable {
     case columns, rows
 }
 
@@ -247,6 +247,77 @@ public indirect enum LayoutNode<ID: Hashable>: Equatable {
         return [Divider(path: path, axis: axis, container: rect, position: position)]
             + a.dividers(in: ra, path: path + [false])
             + b.dividers(in: rb, path: path + [true])
+    }
+
+    // MARK: Hit testing
+
+    /// The tile under `point`, if any.
+    public func leaf(at point: CGPoint, in rect: CGRect) -> ID? {
+        leafFrames(in: rect).first { $0.rect.contains(point) }?.id
+    }
+
+    /// The divider within `tolerance` points of `point`, preferring the closest.
+    public func divider(near point: CGPoint, in rect: CGRect, tolerance: CGFloat = 5) -> Divider? {
+        var best: (Divider, CGFloat)?
+        for d in dividers(in: rect) {
+            let c = d.container
+            let along = d.axis == .columns ? point.y : point.x
+            let range = d.axis == .columns ? c.minY...c.maxY : c.minX...c.maxX
+            let distance = abs((d.axis == .columns ? point.x : point.y) - d.position)
+            guard range.contains(along), distance <= tolerance else { continue }
+            if best == nil || distance < best!.1 { best = (d, distance) }
+        }
+        return best?.0
+    }
+
+    // MARK: Mapping
+
+    /// The same layout with every id transformed. Tiles mapped to nil are removed and
+    /// their siblings expand, exactly as with `removing`.
+    public func compactMapIDs<T: Hashable>(_ transform: (ID) -> T?) -> LayoutNode<T>? {
+        switch self {
+        case .leaf(let id):
+            return transform(id).map { .leaf($0) }
+        case let .split(axis, ratio, a, b):
+            switch (a.compactMapIDs(transform), b.compactMapIDs(transform)) {
+            case (nil, nil): return nil
+            case (let n?, nil), (nil, let n?): return n
+            case let (x?, y?): return .split(axis, ratio: ratio, first: x, second: y)
+            }
+        }
+    }
+}
+
+/// JSON shape: `{"leaf": id}` or `{"axis": "columns", "ratio": 0.5, "first": …, "second": …}`.
+extension LayoutNode: Codable where ID: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case leaf, axis, ratio, first, second
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let id = try c.decodeIfPresent(ID.self, forKey: .leaf) {
+            self = .leaf(id)
+            return
+        }
+        let ratio = try c.decode(CGFloat.self, forKey: .ratio)
+        self = .split(try c.decode(Axis.self, forKey: .axis),
+                      ratio: min(max(ratio, 0.05), 0.95),
+                      first: try c.decode(LayoutNode.self, forKey: .first),
+                      second: try c.decode(LayoutNode.self, forKey: .second))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .leaf(let id):
+            try c.encode(id, forKey: .leaf)
+        case let .split(axis, ratio, a, b):
+            try c.encode(axis, forKey: .axis)
+            try c.encode(ratio, forKey: .ratio)
+            try c.encode(a, forKey: .first)
+            try c.encode(b, forKey: .second)
+        }
     }
 }
 

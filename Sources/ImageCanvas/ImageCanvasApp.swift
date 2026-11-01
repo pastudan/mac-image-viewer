@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct ImageCanvasApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = CanvasModel.shared
+    @State private var layouts = LayoutStore.shared
 
     var body: some Scene {
         // A single `Window` (not WindowGroup): opening more files never spawns new windows,
@@ -24,6 +25,22 @@ struct ImageCanvasApp: App {
                 Button("Open…") { openPanel() }
                     .keyboardShortcut("o")
             }
+            CommandGroup(replacing: .saveItem) {
+                Button("Save Layout…") { layouts.promptSave(model) }
+                    .keyboardShortcut("s")
+                    .disabled(model.isEmpty)
+                Menu("Open Layout") {
+                    if layouts.entries.isEmpty {
+                        Text("No Saved Layouts")
+                    }
+                    ForEach(layouts.entries) { entry in
+                        Button(entry.name) { layouts.open(entry, into: model) }
+                    }
+                    Divider()
+                    Button("Refresh List") { layouts.refresh() }
+                }
+                Button("Show Layouts Folder") { layouts.revealFolder() }
+            }
             CommandGroup(after: .pasteboard) {
                 Divider()
                 Button("Remove Selected") { model.removeSelected() }
@@ -37,17 +54,27 @@ struct ImageCanvasApp: App {
                 Toggle("Crop to Fill Panes", isOn: $model.cropToFill)
                     .keyboardShortcut("f", modifiers: [.command, .option])
                 Divider()
+                Button("Zoom In") { model.zoomSelected(by: 1.25) }
+                    .keyboardShortcut("=")
+                    .disabled(model.selectedID == nil)
+                Button("Zoom Out") { model.zoomSelected(by: 0.8) }
+                    .keyboardShortcut("-")
+                    .disabled(model.selectedID == nil)
+                Button("Actual Size") { if let id = model.selectedID { model.resetZoom(id) } }
+                    .keyboardShortcut("0")
+                    .disabled(model.selectedID == nil)
+                Divider()
             }
             CommandMenu("Arrange") {
                 Button("Even Out") { model.evenOut() }
                     .keyboardShortcut("g")
                     .disabled(model.isEmpty)
-                Button(model.zoomedID == nil ? "Zoom Selected" : "Exit Zoom") {
-                    if model.zoomedID != nil { model.exitZoom() }
-                    else if let id = model.selectedID { model.toggleZoom(id) }
+                Button(model.expandedID == nil ? "Expand Selected to Fill Window" : "Return to Layout") {
+                    if model.expandedID != nil { model.collapse() }
+                    else if let id = model.selectedID { model.toggleExpand(id) }
                 }
                 .keyboardShortcut(.return, modifiers: [.control, .option])
-                .disabled(model.selectedID == nil && model.zoomedID == nil)
+                .disabled(model.selectedID == nil && model.expandedID == nil)
                 Divider()
                 ForEach(snapShortcuts, id: \.zone) { item in
                     Button("Snap Selected: \(item.zone.title)") {
@@ -114,6 +141,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--self-test") {
+            MainActor.assumeIsolated { SelfTest.runIfRequested() }
+            return
+        }
         // Let the window appear first, then (once) offer to take over image and video files.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             MainActor.assumeIsolated { DefaultHandler.offerOnFirstLaunch() }

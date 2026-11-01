@@ -32,8 +32,15 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
   - Over another pane's **centre**, the two panes swap places.
   - At the **window edge**, it takes that whole half and everything else shrinks into the other half.
   - At a **window corner**, it takes a quarter.
-- **Drag the line between panes** to resize them.
-- **Double-click** a pane to zoom it to the whole window, and double-click again to return.
+- **Click** a pane to select it. A click only ever selects the pane under the pointer and never moves anything.
+- **Drag the line between panes** to resize them. The cursor changes and the line turns blue when you're on it.
+- **Pinch** on the trackpad to zoom inside the pane under your fingers, keeping the spot under your fingers in place:
+  - **Two-finger scroll**, or **Option-drag**, pans a zoomed pane.
+  - **Two-finger double-tap** zooms in, or back out.
+  - With a mouse, **Command-scroll** zooms.
+  - **Cmd = / Cmd - / Cmd 0** zoom the selected pane in, out, or back to fit.
+- **Double-click** a pane to expand it to the whole window, and double-click again to return.
+- **File > Save Layout…** (Cmd-S) saves the open files, the pane arrangement and each pane's zoom. **File > Open Layout** restores one, and **File > Show Layouts Folder** shows where they're kept: `~/Library/Application Support/Image Canvas/Layouts/` (one JSON file each). Panes whose files have since moved are skipped, and you're told which ones.
 - **Arrange > Even Out** (Cmd-G) gives every pane the same size.
 - **View > Crop to Fill Panes** (Opt-Cmd-F) crops media to fill each pane instead of letterboxing it.
 - **Videos** loop and start muted:
@@ -44,7 +51,7 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
 - Snap the selected pane from the keyboard:
   - **Ctrl-Opt + arrows** for halves.
   - **Ctrl-Opt + U / I / J / K** for quarters.
-  - **Ctrl-Opt + Return** to zoom.
+  - **Ctrl-Opt + Return** to expand.
 - Right-click a pane for Snap To, Play/Mute, Show in Finder and Remove.
 
 ## Development
@@ -56,6 +63,17 @@ swift run         # runs unbundled (file-type registration needs the .app)
 ```
 
 - `Sources/CanvasCore/` holds the geometry and is unit tested:
-  - `Layout.swift` is the stained-glass layout. It's a binary tree of splits whose leaves are panes, so the panes always cover the canvas exactly.
+  - `Layout.swift` is the stained-glass layout. It's a binary tree of splits whose leaves are panes, so the panes always cover the canvas exactly. It also handles hit testing and the JSON encoding.
   - `SnapZone.swift` detects window edges and corners.
-- `Sources/ImageCanvas/` holds the SwiftUI app, the canvas model, the pane views and video playback (`AVQueuePlayer` + `AVPlayerLooper`).
+  - `Zoom.swift` covers pinch zoom and the hover-button positions.
+  - `LayoutDocument.swift` is the saved-layout file format.
+- `Sources/ImageCanvas/` holds the SwiftUI app:
+  - The SwiftUI views only draw.
+  - `InteractionView.swift` is a single AppKit view on top that receives all mouse, trackpad and file-drop input and maps it to panes through the model's geometry.
+  - Videos play with `AVQueuePlayer` + `AVPlayerLooper`.
+
+End-to-end mouse check, which sends real mouse events through the window:
+
+```sh
+"$HOME/Applications/Image Canvas.app/Contents/MacOS/ImageCanvas" --self-test report.json a.jpg b.jpg c.jpg d.jpg
+```

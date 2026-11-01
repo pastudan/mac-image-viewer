@@ -2,69 +2,65 @@ import AVFoundation
 import CanvasCore
 import SwiftUI
 
-/// One pane of glass: an image or looping video filling its slot in the layout.
+/// One pane of glass: an image or looping video in its slot. Display only; input is
+/// handled by `InteractionNSView`, which uses the same `TileChrome` rects for the buttons.
 struct TileView: View {
     let model: CanvasModel
     let tile: Tile
-    let rect: CGRect
-
-    @State private var hovering = false
-
-    /// Half the width of the lead line between panes.
-    private let gutter: CGFloat = 1.5
+    /// The visible pane, in canvas coordinates.
+    let pane: CGRect
 
     private var isSelected: Bool { model.selectedID == tile.id && model.tiles.count > 1 }
     private var isDragging: Bool { model.draggingID == tile.id }
+    private var showsChrome: Bool { model.hoveredID == tile.id && model.draggingID == nil }
 
     var body: some View {
-        let pane = rect.insetBy(dx: gutter, dy: gutter)
+        let size = CGSize(width: max(pane.width, 1), height: max(pane.height, 1))
 
-        ZStack {
+        ZStack(alignment: .topLeading) {
             Color.black
-            content
-            if hovering && !isDragging {
-                chrome
+            zoomedContent(in: size)
+            if showsChrome {
+                Chrome(tile: tile, size: size, zoom: tile.zoom)
                     .transition(.opacity)
             }
         }
+        .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: 3))
         .overlay(
             RoundedRectangle(cornerRadius: 3)
                 .strokeBorder(Color.accentColor, lineWidth: isSelected ? 2 : 0)
         )
-        .frame(width: max(pane.width, 1), height: max(pane.height, 1))
-        .contentShape(Rectangle())
         // While dragging, the pane shrinks around the grab point and follows the pointer.
-        .scaleEffect(isDragging ? ghostScale(pane.size) : 1, anchor: model.dragAnchor)
+        .scaleEffect(isDragging ? ghostScale(size) : 1, anchor: model.dragAnchor)
         .opacity(isDragging ? 0.85 : 1)
         .shadow(color: .black.opacity(isDragging ? 0.6 : 0), radius: 18, y: 6)
         .offset(isDragging ? model.dragTranslation : .zero)
         .position(x: pane.midX, y: pane.midY)
-        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
-        .onTapGesture(count: 2) { model.toggleZoom(tile.id) }
-        .simultaneousGesture(TapGesture().onEnded { model.selectedID = tile.id })
-        .gesture(
-            DragGesture(minimumDistance: 4, coordinateSpace: .named(CanvasView.space))
-                .onChanged { value in
-                    model.dragChanged(tile.id, start: value.startLocation,
-                                      location: value.location, translation: value.translation)
-                }
-                .onEnded { _ in model.dragEnded() }
-        )
-        .contextMenu { contextMenu }
+        .animation(.easeOut(duration: 0.12), value: showsChrome)
     }
 
     /// Shrink big panes while dragging so the drop preview stays visible underneath.
     private func ghostScale(_ size: CGSize) -> CGFloat {
-        let target: CGFloat = 260
-        return min(1, target / max(size.width, size.height, 1))
+        min(1, 260 / max(size.width, size.height, 1))
+    }
+
+    /// The media, pinch-zoomed: drawn at `scale` times the pane size and shifted by the offset.
+    private func zoomedContent(in size: CGSize) -> some View {
+        let r = tile.zoom.contentRect(in: size)
+        return media
+            .frame(width: r.width, height: r.height)
+            .offset(x: r.minX, y: r.minY)
+            .frame(width: size.width, height: size.height, alignment: .topLeading)
+            .clipped()
     }
 
     @ViewBuilder
-    private var content: some View {
+    private var media: some View {
         switch tile.content {
         case .loading:
             ProgressView().controlSize(.small)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .image(let image):
             Image(nsImage: image)
                 .resizable()
@@ -76,71 +72,53 @@ struct TileView: View {
             PlayerLayerView(player: video.player, fill: model.cropToFill)
         }
     }
+}
 
-    private var chrome: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Button { model.remove(tile.id) } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
-                        .symbolRenderingMode(.hierarchical)
-                }
-                .buttonStyle(.plain)
-                .help("Remove from canvas")
-                Text(tile.name)
+/// Hover controls, placed with the shared `TileChrome` rects (pane-local here).
+private struct Chrome: View {
+    let tile: Tile
+    let size: CGSize
+    let zoom: ZoomTransform
+
+    var body: some View {
+        let local = CGRect(origin: .zero, size: size)
+        let rects = TileChrome.rects(in: local, hasVideo: tile.video != nil)
+        ZStack(alignment: .topLeading) {
+            LinearGradient(colors: [.black.opacity(0.65), .clear], startPoint: .top, endPoint: .bottom)
+                .frame(width: size.width, height: min(34, size.height))
+            if let close = rects[.close] {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 15))
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: close.width, height: close.height)
+                    .position(x: close.midX, y: close.midY)
+                Text(tile.name + (zoom.isZoomed ? String(format: "  ·  %.1f×", zoom.scale) : ""))
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Spacer(minLength: 0)
+                    .frame(maxWidth: max(size.width - close.maxX - 12, 0), alignment: .leading)
+                    .offset(x: close.maxX + 6, y: close.minY + 3)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(LinearGradient(colors: [.black.opacity(0.65), .clear], startPoint: .top, endPoint: .bottom))
-
-            Spacer(minLength: 0)
-
-            if let video = tile.video {
-                HStack(spacing: 10) {
-                    Button { model.togglePlay(tile.id) } label: {
-                        Image(systemName: video.isPlaying ? "pause.fill" : "play.fill")
-                    }
-                    .help(video.isPlaying ? "Pause" : "Play")
-                    Button { model.toggleMute(tile.id) } label: {
-                        Image(systemName: video.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    }
-                    .help(video.isMuted ? "Unmute" : "Mute")
-                    Spacer(minLength: 0)
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 13, weight: .semibold))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .top, endPoint: .bottom))
+            if let video = tile.video, let play = rects[.playPause], let mute = rects[.mute] {
+                LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .top, endPoint: .bottom)
+                    .frame(width: size.width, height: 40)
+                    .offset(y: size.height - 40)
+                Image(systemName: video.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: play.width, height: play.height)
+                    .position(x: play.midX, y: play.midY)
+                Image(systemName: video.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: mute.width, height: mute.height)
+                    .position(x: mute.midX, y: mute.midY)
             }
         }
         .foregroundStyle(.white)
-    }
-
-    @ViewBuilder
-    private var contextMenu: some View {
-        Button(model.zoomedID == tile.id ? "Exit Zoom" : "Zoom to Fill Canvas") { model.toggleZoom(tile.id) }
-        Menu("Snap To") {
-            ForEach(SnapZone.allCases.filter { $0 != .full }, id: \.self) { zone in
-                Button(zone.title) { model.snap(tile.id, to: zone) }
-            }
-        }
-        if let video = tile.video {
-            Divider()
-            Button(video.isPlaying ? "Pause" : "Play") { model.togglePlay(tile.id) }
-            Button(video.isMuted ? "Unmute" : "Mute") { model.toggleMute(tile.id) }
-        }
-        Divider()
-        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([tile.url]) }
-        Button("Remove from Canvas") { model.remove(tile.id) }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
     }
 }
 
-/// A bare AVPlayerLayer (no system controls) that lets SwiftUI handle all mouse input.
+/// A bare AVPlayerLayer (no system controls). Never takes mouse input.
 struct PlayerLayerView: NSViewRepresentable {
     let player: AVPlayer
     let fill: Bool
@@ -175,7 +153,6 @@ final class PlayerNSView: NSView {
 
     override func makeBackingLayer() -> CALayer { AVPlayerLayer() }
 
-    /// Clicks and drags pass through to the SwiftUI gestures on the tile.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
@@ -190,7 +167,7 @@ extension SnapZone {
         case .topRight: "Top Right"
         case .bottomLeft: "Bottom Left"
         case .bottomRight: "Bottom Right"
-        case .full: "Fill Canvas"
+        case .full: "Fill Window"
         }
     }
 }

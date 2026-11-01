@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import CanvasCore
 import ImageIO
 import Observation
 import UniformTypeIdentifiers
@@ -19,8 +20,14 @@ struct Tile: Identifiable {
     let url: URL
     let kind: MediaKind
     var content: TileContent = .loading
+    /// Pinch zoom within the pane.
+    var zoom: ZoomTransform = .identity
 
     var name: String { url.lastPathComponent }
+
+    var isLoaded: Bool {
+        if case .loading = content { false } else { true }
+    }
 
     var video: LoopingVideo? {
         if case .video(let v) = content { v } else { nil }
