@@ -8,18 +8,30 @@ struct ImageCanvasApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = CanvasModel.shared
     @State private var layouts = LayoutStore.shared
+    @State private var lock = AppLock.shared
 
     var body: some Scene {
         // A single `Window` (not WindowGroup): opening more files never spawns new windows,
         // everything joins the one canvas.
         Window("Image Canvas", id: "canvas") {
-            CanvasView(model: model)
-                .navigationTitle(title)
+            Group {
+                if lock.isLocked {
+                    // The canvas isn't built at all while locked: no images, no input, no drops.
+                    LockScreenView(lock: lock)
+                } else {
+                    CanvasView(model: model)
+                }
+            }
+            .frame(minWidth: 480, minHeight: 320)
+            .navigationTitle(lock.isLocked ? "Image Canvas" : title)
         }
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Make Default Viewer…") { DefaultHandler.makeDefault() }
+                Button("Lock Now") { lock.lock() }
+                    .keyboardShortcut("l", modifiers: [.control, .command])
+                    .disabled(lock.isLocked)
             }
             CommandGroup(replacing: .newItem) {
                 Button("Open…") { openPanel() }
@@ -98,6 +110,10 @@ struct ImageCanvasApp: App {
                 .disabled(model.selectedVideo == nil)
             }
         }
+
+        Settings {
+            SettingsView(lock: lock)
+        }
     }
 
     private var title: String {
@@ -141,6 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { AppLock.shared.startObserving() }
         if CommandLine.arguments.contains("--self-test") {
             MainActor.assumeIsolated { SelfTest.runIfRequested() }
             return

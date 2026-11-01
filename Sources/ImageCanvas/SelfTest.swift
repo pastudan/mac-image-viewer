@@ -26,6 +26,7 @@ enum SelfTest {
                 try await run(files: Array(images.prefix(4)), record: record)
                 if let video = videos.first {
                     try await runScrub(video: video, record: record)
+                    try await runLock(video: video, image: images.first, record: record)
                 }
             } catch {
                 results.append(["name": "harness", "passed": false, "detail": "\(error)"])
@@ -36,7 +37,9 @@ enum SelfTest {
                 // Leave a zoomed, hovered layout on screen for a window-only screenshot.
                 let model = CanvasModel.shared
                 model.evenOut()
-                if let id = model.layout?.ids.first, let pane = model.paneRect(id) {
+                if args.contains("--hold-locked") {
+                    AppLock.shared.lock()
+                } else if let id = model.layout?.ids.first, let pane = model.paneRect(id) {
                     if model.tiles[id]?.video != nil {
                         // Show the seek bar mid-scrub.
                         model.beginScrub(id)
@@ -49,7 +52,7 @@ enum SelfTest {
                 }
                 // A window behind others stops redrawing, so bring it forward for the capture.
                 NSApp.activate()
-                InteractionNSView.current?.window?.makeKeyAndOrderFront(nil)
+                NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
                 try? await Task.sleep(for: .seconds(1))
                 let frames = model.layout?.leafFrames(in: model.canvasRect).map {
                     "\(model.tiles[$0.id]?.name ?? "?") \($0.rect) zoom=\(model.tiles[$0.id]?.zoom.scale ?? 0)"
@@ -63,6 +66,86 @@ enum SelfTest {
     }
 
     private struct Failure: Error, CustomStringConvertible { let description: String }
+
+    /// Sleep lock. Posts the real workspace sleep notification. Authentication is stubbed
+    /// because a test can't touch the sensor; the settings value is restored afterwards.
+    private static func runLock(video: URL, image: URL?, record: (String, Bool, String) -> Void) async throws {
+        let model = CanvasModel.shared
+        let lock = AppLock.shared
+        let savedSetting = lock.requireOnWake
+        let savedAuth = lock.authenticator
+        let savedFront = lock.isFrontmost
+        defer {
+            lock.requireOnWake = savedSetting
+            lock.authenticator = savedAuth
+            lock.isFrontmost = savedFront
+        }
+        model.removeAll()
+        model.add(urls: [video] + (image.map { [$0] } ?? []))
+        for _ in 0..<100 where !(model.tiles.values.allSatisfy(\.isLoaded) && model.tiles.count >= 1) {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        guard let videoID = model.tiles.values.first(where: { $0.video != nil })?.id,
+              let player = model.tiles[videoID]?.video else { throw Failure(description: "video never loaded") }
+        try await Task.sleep(for: .milliseconds(300))
+        let sleep = { NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil) }
+
+        // Setting off: sleeping does nothing.
+        lock.requireOnWake = false
+        sleep()
+        try await Task.sleep(for: .milliseconds(200))
+        record("sleep with setting off does not lock", !lock.isLocked && player.player.rate > 0,
+               "locked=\(lock.isLocked) rate=\(player.player.rate)")
+
+        // Setting on: sleeping locks, hides the canvas and pauses video.
+        lock.requireOnWake = true
+        var prompts = 0
+        lock.authenticator = { _ in prompts += 1; return .cancelled }
+        sleep()
+        try await Task.sleep(for: .milliseconds(300))
+        let interactionGone = InteractionNSView.current?.window == nil
+        record("sleep with setting on locks, hides canvas, pauses video",
+               lock.isLocked && player.player.rate == 0 && interactionGone,
+               "locked=\(lock.isLocked) rate=\(player.player.rate) canvasViewRemoved=\(interactionGone)")
+
+        // Waking with the app in front prompts once; cancelling keeps it locked and
+        // reactivation after the cancel does not re-prompt.
+        NSApp.activate()
+        try await Task.sleep(for: .milliseconds(300))
+        let reallyActive = NSApp.isActive
+        // In the background: waking must not prompt.
+        lock.isFrontmost = { false }
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await Task.sleep(for: .milliseconds(600))
+        let whileBackground = prompts
+        // In front: waking prompts once.
+        lock.isFrontmost = { true }
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await Task.sleep(for: .milliseconds(600))
+        let afterWake = prompts
+        // After a cancel, the app becoming active again doesn't re-prompt.
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApp)
+        try await Task.sleep(for: .milliseconds(600))
+        model.togglePlay(videoID)
+        let stillPaused = player.player.rate == 0
+        record("wake prompts once only when in front; cancel stays locked; nothing plays behind lock",
+               whileBackground == 0 && afterWake == 1 && prompts == 1 && lock.isLocked && stillPaused,
+               "background=\(whileBackground) afterWake=\(afterWake) total=\(prompts) locked=\(lock.isLocked) paused=\(stillPaused) (test process really frontmost: \(reallyActive))")
+
+        // A failed attempt shows the reason and stays locked.
+        lock.authenticator = { _ in .failed("Touch ID didn't match.") }
+        await lock.unlock()
+        record("failed unlock stays locked with message", lock.isLocked && lock.message == "Touch ID didn't match.",
+               "locked=\(lock.isLocked) message=\(lock.message ?? "nil")")
+
+        // Success reveals the canvas and resumes the video.
+        lock.authenticator = { _ in .success }
+        await lock.unlock()
+        try await Task.sleep(for: .milliseconds(400))
+        record("successful unlock shows canvas and resumes video",
+               !lock.isLocked && player.player.rate > 0 && InteractionNSView.current?.window != nil,
+               "locked=\(lock.isLocked) rate=\(player.player.rate)")
+    }
 
     /// Two-finger scrub, driven through the same handler `scrollWheel(with:)` calls.
     /// Deltas are in finger direction (positive x = fingers moving right).

@@ -55,6 +55,16 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
   - **Ctrl-Opt + Return** to expand.
 - Right-click a pane for Snap To, Play/Mute, Show in Finder and Remove.
 
+## Privacy lock (optional)
+
+**Image Canvas > Settings… (Cmd-,) > Require Touch ID to show images after the Mac sleeps.** It's off by default.
+
+- When it's on and the Mac sleeps, the canvas is replaced by a lock screen and videos pause. Your images aren't drawn behind it at all.
+- On wake, if Image Canvas is the app in front, it asks for Touch ID straight away. Otherwise click **Unlock with Touch ID**. Your Mac password works as a fallback.
+- **Also lock when the screen locks or the screen saver starts** is on by default once the main setting is on, because closing the lid often locks the screen without a full sleep.
+- **Image Canvas > Lock Now** (Ctrl-Cmd-L) locks immediately.
+- Macs don't have Face ID. On a Mac without Touch ID, the password is used instead.
+
 ## Development
 
 ```sh

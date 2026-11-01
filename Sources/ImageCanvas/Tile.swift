@@ -69,6 +69,12 @@ final class LoopingVideo {
         player.pause()
     }
 
+    /// Pauses while the app is locked, without changing the play/pause setting.
+    func suspend() { player.pause() }
+
+    /// Picks up again after unlocking, if it was playing before.
+    func resume() { if isPlaying { player.play() } }
+
     func seek(to seconds: Double) {
         // Stop just short of the end, so the looper doesn't jump to the next copy.
         let clamped = min(max(seconds, 0), max(duration - 1.0 / 30, 0))

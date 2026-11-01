@@ -142,7 +142,9 @@ final class CanvasModel {
                 guard playable else { return failed(id, url) }
                 let duration = (try? await asset.load(.duration))?.seconds ?? 0
                 guard tiles[id] != nil else { return } // removed while loading
-                tiles[id]?.content = .video(LoopingVideo(asset: asset, duration: duration.isFinite ? duration : 0))
+                let video = LoopingVideo(asset: asset, duration: duration.isFinite ? duration : 0)
+                tiles[id]?.content = .video(video)
+                AppLock.shared.didLoad(video, id: id)
             }
         }
     }
@@ -245,7 +247,8 @@ final class CanvasModel {
     /// Starts a two-finger scrub on a video pane and shows its seek bar.
     @discardableResult
     func beginScrub(_ id: UUID) -> Bool {
-        guard let video = tiles[id]?.video, video.duration > 0, let pane = paneRect(id) else { return false }
+        guard !AppLock.shared.isLocked,
+              let video = tiles[id]?.video, video.duration > 0, let pane = paneRect(id) else { return false }
         video.beginScrub()
         selectedID = id
         withAnimation(.easeOut(duration: 0.1)) {
@@ -265,11 +268,14 @@ final class CanvasModel {
     /// Fingers lifted: hide the seek bar straight away and resume playback.
     func endScrub() {
         guard let s = scrub else { return }
-        tiles[s.id]?.video?.endScrub()
+        if !AppLock.shared.isLocked { tiles[s.id]?.video?.endScrub() }
         withAnimation(.easeOut(duration: 0.12)) { scrub = nil }
     }
 
-    func togglePlay(_ id: UUID) { tiles[id]?.video?.togglePlay() }
+    func togglePlay(_ id: UUID) {
+        guard !AppLock.shared.isLocked else { return } // nothing plays behind the lock screen
+        tiles[id]?.video?.togglePlay()
+    }
 
     /// Unmuting one video mutes the rest, so only one soundtrack plays at a time.
     func toggleMute(_ id: UUID) {
