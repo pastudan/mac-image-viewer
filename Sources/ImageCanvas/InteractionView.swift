@@ -213,8 +213,73 @@ final class InteractionNSView: NSView {
         let precise = event.hasPreciseScrollingDeltas
         let delta = CGSize(width: event.scrollingDeltaX * (precise ? 1 : 10),
                            height: event.scrollingDeltaY * (precise ? 1 : 10))
-        if !handleScroll(by: delta, at: location(event), zoomModifier: event.modifierFlags.contains(.command)) {
+        let point = location(event)
+        let command = event.modifierFlags.contains(.command)
+
+        // Trackpad gestures carry phases; plain mouse wheels don't.
+        if !event.phase.isEmpty || !event.momentumPhase.isEmpty {
+            // Scroll deltas follow the content; flip them back to finger direction when
+            // natural scrolling is off, so "fingers move right" is the same either way.
+            let finger = event.isDirectionInvertedFromDevice ? delta : CGSize(width: -delta.width, height: -delta.height)
+            let used = handleTrackpadScroll(phase: event.phase, isMomentum: !event.momentumPhase.isEmpty,
+                                            contentDelta: delta, fingerDelta: finger, at: point, command: command)
+            if !used { super.scrollWheel(with: event) }
+            return
+        }
+        if !handleScroll(by: delta, at: point, zoomModifier: command) {
             super.scrollWheel(with: event)
+        }
+    }
+
+    private var scrollGesture = ScrollGesture()
+    private var scrollTarget: UUID?
+    /// After a scrub, the coasting events macOS sends once the fingers lift are swallowed,
+    /// so they can neither keep seeking nor bring the seek bar back.
+    private var swallowMomentum = false
+
+    /// Two-finger trackpad scroll:
+    /// - sideways on a video: scrub, with a seek bar shown until the fingers lift
+    /// - otherwise: pan a zoomed pane (Command: zoom)
+    /// Returns false when the scroll wasn't used.
+    func handleTrackpadScroll(phase: NSEvent.Phase, isMomentum: Bool, contentDelta: CGSize,
+                              fingerDelta: CGSize, at point: CGPoint, command: Bool) -> Bool {
+        if isMomentum {
+            if swallowMomentum { return true }
+            guard let id = scrollTarget, model.tiles[id]?.zoom.isZoomed == true else { return false }
+            model.pan(id, by: contentDelta)
+            return true
+        }
+        if phase.contains(.mayBegin) { return true }
+        if phase.contains(.began) {
+            scrollGesture = ScrollGesture()
+            scrollTarget = model.tileID(at: point)
+            swallowMomentum = false
+        }
+        defer {
+            if phase.contains(.ended) || phase.contains(.cancelled) {
+                if model.scrub != nil {
+                    model.endScrub()
+                    swallowMomentum = true
+                }
+                scrollGesture = ScrollGesture()
+            }
+        }
+        if command { return handleScroll(by: contentDelta, at: point, zoomModifier: true) }
+        guard let id = scrollTarget, let tile = model.tiles[id] else { return false }
+
+        // A zoomed video pans instead of scrubbing; reset its zoom (Cmd-0) to scrub again.
+        let canScrub = (tile.video?.duration ?? 0) > 0 && !tile.zoom.isZoomed
+        switch scrollGesture.feed(fingerDelta, canScrub: canScrub) {
+        case .undecided:
+            return true
+        case .scrub:
+            if model.scrub?.id != id, !model.beginScrub(id) { return true }
+            model.updateScrub(by: fingerDelta.width)
+            return true
+        case .pan:
+            guard tile.zoom.isZoomed else { return false }
+            model.pan(id, by: contentDelta)
+            return true
         }
     }
 

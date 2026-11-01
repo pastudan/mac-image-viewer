@@ -39,16 +39,60 @@ struct Tile: Identifiable {
 @Observable
 final class LoopingVideo {
     let player = AVQueuePlayer()
+    /// Length of one loop, in seconds (0 if unknown).
+    let duration: Double
     private var looper: AVPlayerLooper?
     private(set) var isPlaying = true
     private(set) var isMuted = true
 
-    init(asset: AVAsset) {
+    // Scrubbing: at most one seek in flight, and only the newest target is kept, so a
+    // fast swipe never queues up a backlog of stale seeks.
+    private var pendingSeek: CMTime?
+    private var isSeeking = false
+
+    init(asset: AVAsset, duration: Double) {
+        self.duration = duration
         player.isMuted = true
         // Several looping clips shouldn't keep the display awake forever.
         player.preventsDisplaySleepDuringVideoPlayback = false
         looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(asset: asset))
         player.play()
+    }
+
+    var currentSeconds: Double {
+        let t = player.currentTime().seconds
+        return t.isFinite ? t : 0
+    }
+
+    /// Pauses for scrubbing without changing the play/pause setting.
+    func beginScrub() {
+        player.pause()
+    }
+
+    func seek(to seconds: Double) {
+        // Stop just short of the end, so the looper doesn't jump to the next copy.
+        let clamped = min(max(seconds, 0), max(duration - 1.0 / 30, 0))
+        pendingSeek = CMTime(seconds: clamped, preferredTimescale: 600)
+        if !isSeeking { seekToPending() }
+    }
+
+    private func seekToPending() {
+        guard let target = pendingSeek else { return }
+        pendingSeek = nil
+        isSeeking = true
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.isSeeking = false
+                    self?.seekToPending()
+                }
+            }
+        }
+    }
+
+    /// Resumes playback if it was playing before the scrub.
+    func endScrub() {
+        if isPlaying { player.play() }
     }
 
     func togglePlay() {

@@ -44,6 +44,7 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
 - **Arrange > Even Out** (Cmd-G) gives every pane the same size.
 - **View > Crop to Fill Panes** (Opt-Cmd-F) crops media to fill each pane instead of letterboxing it.
 - **Videos** loop and start muted:
+  - **Two-finger swipe left or right** on a video to scrub through it. A seek bar shows while your fingers are down and disappears the moment you lift them, and playback then resumes. One swipe across the pane covers the whole video. On a pinch-zoomed video, two fingers pan instead; Cmd-0 resets the zoom.
   - Hover for play/pause and mute buttons.
   - With a video selected, **Space** plays or pauses it and **M** mutes or unmutes it.
   - Unmuting one video mutes the others.

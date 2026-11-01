@@ -13,12 +13,19 @@ enum SelfTest {
         let args = CommandLine.arguments
         guard let flag = args.firstIndex(of: "--self-test"), args.count > flag + 1 else { return }
         let report = URL(fileURLWithPath: args[flag + 1])
-        let files = args.dropFirst(flag + 2).map { URL(fileURLWithPath: $0) }
+        let rest = args.dropFirst(flag + 2).filter { !$0.hasPrefix("--") }
+        let files = rest.map { URL(fileURLWithPath: $0) }
+        let images = files.filter { MediaLoader.kind(of: $0) == .image }
+        let videos = files.filter { MediaLoader.kind(of: $0) == .video }
         Task { @MainActor in
             var results: [[String: Any]] = []
+            let record: (String, Bool, String) -> Void = { name, passed, detail in
+                results.append(["name": name, "passed": passed, "detail": detail])
+            }
             do {
-                try await run(files: files) { name, passed, detail in
-                    results.append(["name": name, "passed": passed, "detail": detail])
+                try await run(files: Array(images.prefix(4)), record: record)
+                if let video = videos.first {
+                    try await runScrub(video: video, record: record)
                 }
             } catch {
                 results.append(["name": "harness", "passed": false, "detail": "\(error)"])
@@ -30,8 +37,14 @@ enum SelfTest {
                 let model = CanvasModel.shared
                 model.evenOut()
                 if let id = model.layout?.ids.first, let pane = model.paneRect(id) {
-                    model.zoom(id, by: 3, at: CGPoint(x: pane.midX, y: pane.midY))
-                    model.hoveredID = id
+                    if model.tiles[id]?.video != nil {
+                        // Show the seek bar mid-scrub.
+                        model.beginScrub(id)
+                        model.updateScrub(by: pane.width * 0.4)
+                    } else {
+                        model.zoom(id, by: 3, at: CGPoint(x: pane.midX, y: pane.midY))
+                        model.hoveredID = id
+                    }
                     model.selectedID = id
                 }
                 // A window behind others stops redrawing, so bring it forward for the capture.
@@ -50,6 +63,72 @@ enum SelfTest {
     }
 
     private struct Failure: Error, CustomStringConvertible { let description: String }
+
+    /// Two-finger scrub, driven through the same handler `scrollWheel(with:)` calls.
+    /// Deltas are in finger direction (positive x = fingers moving right).
+    private static func runScrub(video: URL, record: (String, Bool, String) -> Void) async throws {
+        let model = CanvasModel.shared
+        model.removeAll()
+        model.add(urls: [video])
+        for _ in 0..<100 where !(model.tiles.values.first?.video.map { $0.duration > 0 } ?? false) {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        guard let view = InteractionNSView.current, let id = model.layout?.ids.first,
+              let player = model.tiles[id]?.video, let pane = model.paneRect(id) else {
+            throw Failure(description: "video never loaded")
+        }
+        try await Task.sleep(for: .milliseconds(500))
+        let p = CGPoint(x: pane.midX, y: pane.midY)
+        func scroll(_ phase: NSEvent.Phase, momentum: Bool = false, dx: CGFloat, dy: CGFloat = 0) -> Bool {
+            view.handleTrackpadScroll(phase: phase, isMomentum: momentum,
+                                      contentDelta: CGSize(width: dx, height: dy),
+                                      fingerDelta: CGSize(width: dx, height: dy), at: p, command: false)
+        }
+
+        // Fingers down: no seek bar until the swipe direction is known.
+        _ = scroll(.mayBegin, dx: 0)
+        _ = scroll(.began, dx: 1)
+        let hiddenAtStart = model.scrub == nil
+        // Sideways swipe: the bar appears, playback pauses and time follows the fingers.
+        _ = scroll(.changed, dx: 6)
+        let shownAfterSwipe = model.scrub?.id == id
+        let start = model.scrub?.time ?? 0
+        for _ in 0..<10 { _ = scroll(.changed, dx: 20, dy: 3) } // a little vertical drift
+        let expected = ScrubMath.advance(start, by: 200, paneWidth: pane.width, duration: player.duration)
+        let forward = model.scrub?.time ?? -1
+        let paused = player.player.rate == 0
+        try await Task.sleep(for: .milliseconds(400))
+        let playerTime = player.currentSeconds
+        // Swipe left goes back.
+        for _ in 0..<5 { _ = scroll(.changed, dx: -20) }
+        let back = model.scrub?.time ?? -1
+        record("two-finger sideways swipe shows seek bar and scrubs", hiddenAtStart && shownAfterSwipe
+                   && abs(forward - expected) < 0.001 && back < forward && paused,
+               String(format: "hiddenAtStart=%@ shown=%@ start=%.2f forward=%.2f expected=%.2f back=%.2f paused=%@",
+                      "\(hiddenAtStart)", "\(shownAfterSwipe)", start, forward, expected, back, "\(paused)"))
+        record("player follows the scrub", abs(playerTime - forward) < 0.1,
+               String(format: "player=%.3f scrub=%.3f", playerTime, forward))
+
+        // Fingers lift: the bar goes immediately; coasting events neither seek nor bring it back.
+        _ = scroll(.ended, dx: 0)
+        let hiddenOnLift = model.scrub == nil
+        let resumed = player.player.rate > 0
+        let timeAtLift = player.currentSeconds
+        for _ in 0..<8 {
+            _ = scroll([], momentum: true, dx: 30)
+        }
+        let staysHidden = model.scrub == nil
+        try await Task.sleep(for: .milliseconds(300))
+        record("lifting fingers hides seek bar at once and resumes", hiddenOnLift && staysHidden && resumed,
+               "hiddenOnLift=\(hiddenOnLift) staysHiddenThroughMomentum=\(staysHidden) resumed=\(resumed) timeAtLift=\(timeAtLift)")
+
+        // A vertical swipe on an unzoomed video is not a scrub.
+        _ = scroll(.began, dx: 0, dy: 1)
+        _ = scroll(.changed, dx: 1, dy: 8)
+        let noScrubVertical = model.scrub == nil
+        _ = scroll(.ended, dx: 0)
+        record("vertical two-finger swipe does not scrub", noScrubVertical, "scrub=\(String(describing: model.scrub))")
+    }
 
     private static func run(files: [URL], record: (String, Bool, String) -> Void) async throws {
         let model = CanvasModel.shared

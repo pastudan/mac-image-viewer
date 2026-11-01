@@ -37,6 +37,15 @@ final class CanvasModel {
     /// Where the dragged tile, or files dragged in from Finder, would land.
     private(set) var dropPreview: CGRect?
 
+    /// A two-finger scrub in progress. Its seek bar is shown only while this is set.
+    struct Scrub: Equatable {
+        let id: UUID
+        let duration: Double
+        let paneWidth: CGFloat
+        var time: Double
+    }
+    private(set) var scrub: Scrub?
+
     static let spring = Animation.spring(duration: 0.3, bounce: 0.12)
     /// Half the width of the dark "lead" line between panes.
     static let gutter: CGFloat = 1.5
@@ -131,8 +140,9 @@ final class CanvasModel {
                 let asset = AVURLAsset(url: url)
                 let playable = (try? await asset.load(.isPlayable)) ?? false
                 guard playable else { return failed(id, url) }
+                let duration = (try? await asset.load(.duration))?.seconds ?? 0
                 guard tiles[id] != nil else { return } // removed while loading
-                tiles[id]?.content = .video(LoopingVideo(asset: asset))
+                tiles[id]?.content = .video(LoopingVideo(asset: asset, duration: duration.isFinite ? duration : 0))
             }
         }
     }
@@ -147,6 +157,7 @@ final class CanvasModel {
     // MARK: Removing
 
     func remove(_ id: UUID) {
+        if scrub?.id == id { scrub = nil }
         tiles[id]?.video?.stop()
         tiles[id] = nil
         withAnimation(Self.spring) {
@@ -162,6 +173,7 @@ final class CanvasModel {
     }
 
     func removeAll() {
+        scrub = nil
         for tile in tiles.values { tile.video?.stop() }
         tiles.removeAll()
         layout = nil
@@ -229,6 +241,33 @@ final class CanvasModel {
     }
 
     // MARK: Video
+
+    /// Starts a two-finger scrub on a video pane and shows its seek bar.
+    @discardableResult
+    func beginScrub(_ id: UUID) -> Bool {
+        guard let video = tiles[id]?.video, video.duration > 0, let pane = paneRect(id) else { return false }
+        video.beginScrub()
+        selectedID = id
+        withAnimation(.easeOut(duration: 0.1)) {
+            scrub = Scrub(id: id, duration: video.duration, paneWidth: pane.width, time: video.currentSeconds)
+        }
+        return true
+    }
+
+    /// Moves the scrub by a horizontal finger movement (positive = fingers moving right = forward).
+    func updateScrub(by fingerDistance: CGFloat) {
+        guard var s = scrub, let video = tiles[s.id]?.video else { return }
+        s.time = ScrubMath.advance(s.time, by: fingerDistance, paneWidth: s.paneWidth, duration: s.duration)
+        scrub = s
+        video.seek(to: s.time)
+    }
+
+    /// Fingers lifted: hide the seek bar straight away and resume playback.
+    func endScrub() {
+        guard let s = scrub else { return }
+        tiles[s.id]?.video?.endScrub()
+        withAnimation(.easeOut(duration: 0.12)) { scrub = nil }
+    }
 
     func togglePlay(_ id: UUID) { tiles[id]?.video?.togglePlay() }
 

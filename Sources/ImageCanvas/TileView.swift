@@ -12,7 +12,8 @@ struct TileView: View {
 
     private var isSelected: Bool { model.selectedID == tile.id && model.tiles.count > 1 }
     private var isDragging: Bool { model.draggingID == tile.id }
-    private var showsChrome: Bool { model.hoveredID == tile.id && model.draggingID == nil }
+    private var scrub: CanvasModel.Scrub? { model.scrub?.id == tile.id ? model.scrub : nil }
+    private var showsChrome: Bool { model.hoveredID == tile.id && model.draggingID == nil && scrub == nil }
 
     var body: some View {
         let size = CGSize(width: max(pane.width, 1), height: max(pane.height, 1))
@@ -22,6 +23,11 @@ struct TileView: View {
             zoomedContent(in: size)
             if showsChrome {
                 Chrome(tile: tile, size: size, zoom: tile.zoom)
+                    .transition(.opacity)
+            }
+            if let scrub {
+                SeekBar(time: scrub.time, duration: scrub.duration, width: size.width)
+                    .frame(width: size.width, height: size.height, alignment: .bottom)
                     .transition(.opacity)
             }
         }
@@ -115,6 +121,48 @@ private struct Chrome: View {
         }
         .foregroundStyle(.white)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
+    }
+}
+
+/// The temporary seek bar shown while two fingers are scrubbing a video.
+private struct SeekBar: View {
+    let time: Double
+    let duration: Double
+    let width: CGFloat
+
+    var body: some View {
+        let progress = duration > 0 ? min(max(time / duration, 0), 1) : 0
+        let compact = width < 260
+        VStack(spacing: 6) {
+            if !compact {
+                HStack {
+                    Text(ScrubMath.timecode(time))
+                    Spacer()
+                    Text(ScrubMath.timecode(duration))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+                .font(.system(size: 12, weight: .semibold).monospacedDigit())
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.28))
+                    Capsule().fill(.white)
+                        .frame(width: max(geo.size.width * progress, 4))
+                    Circle().fill(.white)
+                        .frame(width: 12, height: 12)
+                        .shadow(color: .black.opacity(0.4), radius: 2)
+                        .offset(x: geo.size.width * progress - 6)
+                }
+                .frame(height: 4)
+                .frame(maxHeight: .infinity)
+            }
+            .frame(height: 12)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 12)
+        .padding(.top, 18)
+        .padding(.bottom, 10)
+        .background(LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom))
     }
 }
 
