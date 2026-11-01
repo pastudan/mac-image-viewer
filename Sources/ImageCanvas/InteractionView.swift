@@ -345,8 +345,20 @@ final class InteractionNSView: NSView {
     // MARK: Files dragged in from Finder
 
     private func fileURLs(_ info: NSDraggingInfo) -> [URL] {
-        info.draggingPasteboard.readObjects(forClasses: [NSURL.self],
-                                            options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        Self.fileURLs(on: info.draggingPasteboard)
+    }
+
+    /// File URLs on a drag pasteboard (from Finder or from the strip).
+    static func fileURLs(on pasteboard: NSPasteboard) -> [URL] {
+        pasteboard.readObjects(forClasses: [NSURL.self],
+                               options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+    }
+
+    /// A drop at `point` (view coordinates) of these files: the same path a real drop takes.
+    func simulateDrop(of urls: [URL], at point: CGPoint) {
+        model.externalDragMoved(to: point)
+        let target = model.externalDragEnded()
+        model.add(urls: urls, target: target)
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { externalDrag(sender) }

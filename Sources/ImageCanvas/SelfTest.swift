@@ -13,7 +13,14 @@ enum SelfTest {
         let args = CommandLine.arguments
         guard let flag = args.firstIndex(of: "--self-test"), args.count > flag + 1 else { return }
         let report = URL(fileURLWithPath: args[flag + 1])
-        let rest = args.dropFirst(flag + 2).filter { !$0.hasPrefix("--") }
+        // File arguments, skipping flags and the value after --strip-folder.
+        var rest: [String] = []
+        var skipNext = false
+        for arg in args.dropFirst(flag + 2) {
+            if skipNext { skipNext = false; continue }
+            if arg == "--strip-folder" { skipNext = true; continue }
+            if !arg.hasPrefix("--") { rest.append(arg) }
+        }
         let files = rest.map { URL(fileURLWithPath: $0) }
         let images = files.filter { MediaLoader.kind(of: $0) == .image }
         let videos = files.filter { MediaLoader.kind(of: $0) == .video }
@@ -23,11 +30,16 @@ enum SelfTest {
                 results.append(["name": name, "passed": passed, "detail": detail])
             }
             do {
-                try await run(files: Array(images.prefix(4)), record: record)
+                if images.count >= 4 {
+                    try await run(files: Array(images.prefix(4)), record: record)
+                }
                 if let video = videos.first {
                     try await runScrub(video: video, record: record)
                     try await runHoverSeek(video: video, record: record)
                     try await runLock(video: video, image: images.first, record: record)
+                }
+                if let folderArg = args.firstIndex(of: "--strip-folder"), args.count > folderArg + 1 {
+                    try await runStrip(folder: URL(fileURLWithPath: args[folderArg + 1]), record: record)
                 }
             } catch {
                 results.append(["name": "harness", "passed": false, "detail": "\(error)"])
@@ -37,7 +49,20 @@ enum SelfTest {
             if args.contains("--hold") {
                 // Leave a zoomed, hovered layout on screen for a window-only screenshot.
                 let model = CanvasModel.shared
-                if args.contains("--hold-hover") {
+                if args.contains("--hold-strip"), let folderArg = args.firstIndex(of: "--strip-folder") {
+                    // Strip showing the folder, with a couple of items already on the canvas.
+                    // The user's own strip folder setting is put back afterwards.
+                    let strip = MediaStrip.shared
+                    let defaults = UserDefaults.standard
+                    let savedFolder = defaults.string(forKey: "strip.folderPath")
+                    strip.setFolder(URL(fileURLWithPath: args[folderArg + 1]))
+                    if let savedFolder { defaults.set(savedFolder, forKey: "strip.folderPath") }
+                    else { defaults.removeObject(forKey: "strip.folderPath") }
+                    await strip.waitForScan()
+                    model.removeAll()
+                    model.add(urls: Array((strip.result?.sections.flatMap(\.items) ?? []).prefix(2)).map(\.url))
+                    try? await Task.sleep(for: .milliseconds(1500)) // thumbnails
+                } else if args.contains("--hold-hover") {
                     // Two videos side by side: the first hovered, the second showing just its runtime.
                     model.removeAll()
                     model.add(urls: Array(videos.prefix(2)))
@@ -160,6 +185,79 @@ enum SelfTest {
         record("successful unlock shows canvas and resumes video",
                !lock.isLocked && player.player.rate > 0 && InteractionNSView.current?.window != nil,
                "locked=\(lock.isLocked) rate=\(player.player.rate)")
+    }
+
+    /// The folder strip: scanning, the strip on screen, and dragging an item onto the canvas.
+    /// The drag payload is the exact provider the strip hands to AppKit, written to a real
+    /// pasteboard and read back by the canvas's drop code. The previous folder setting is restored.
+    private static func runStrip(folder: URL, record: (String, Bool, String) -> Void) async throws {
+        let model = CanvasModel.shared
+        let strip = MediaStrip.shared
+        let defaults = UserDefaults.standard
+        let savedFolder = defaults.string(forKey: "strip.folderPath")
+        let savedVisible = defaults.object(forKey: "strip.visible")
+        defer {
+            if let savedFolder { defaults.set(savedFolder, forKey: "strip.folderPath") }
+            else { defaults.removeObject(forKey: "strip.folderPath") }
+            if let savedVisible { defaults.set(savedVisible, forKey: "strip.visible") }
+            else { defaults.removeObject(forKey: "strip.visible") }
+        }
+
+        model.removeAll()
+        strip.setFolder(folder)
+        await strip.waitForScan()
+        let result = strip.result
+        let names = result?.sections.flatMap { $0.items.map(\.name) } ?? []
+        record("strip scans folder and subfolders",
+               (result?.count ?? 0) >= 4 && (result?.sections.count ?? 0) >= 2 && (result?.videoCount ?? 0) >= 1,
+               "items=\(result?.count ?? 0) sections=\(result?.sections.map { $0.relativeFolder.isEmpty ? "(root)" : $0.relativeFolder } ?? []) videos=\(result?.videoCount ?? 0) names=\(names)")
+
+        // The strip is in the window, to the left of the canvas.
+        try await Task.sleep(for: .milliseconds(600))
+        guard let canvasView = InteractionNSView.current, let window = canvasView.window else {
+            throw Failure(description: "canvas view missing")
+        }
+        let canvasFrame = canvasView.convert(canvasView.bounds, to: nil)
+        record("strip sits left of the canvas", strip.isVisible && canvasFrame.minX >= 140,
+               "canvas starts at x=\(Int(canvasFrame.minX)) of window width \(Int(window.frame.width))")
+
+        // Fill the canvas with two items, then drag a third from the strip onto the left edge.
+        let all = result?.sections.flatMap(\.items) ?? []
+        guard all.count >= 3 else { throw Failure(description: "need 3+ items in strip folder") }
+        model.add(urls: [all[0].url, all[1].url])
+        try await Task.sleep(for: .milliseconds(400))
+
+        // What the strip's drag provider actually carries, loaded the way a drop destination
+        // does, then written to a pasteboard and read back by the canvas's drop code.
+        let provider = StripCell.dragProvider(for: all[2].url)
+        let providerTypes = provider.registeredTypeIdentifiers
+        let loaded: URL? = await withCheckedContinuation { continuation in
+            _ = provider.loadObject(ofClass: NSURL.self) { object, _ in
+                continuation.resume(returning: (object as? NSURL) as URL?)
+            }
+        }
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("ImageCanvas.selftest.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        let wrote = loaded.map { pasteboard.writeObjects([$0 as NSURL]) } ?? false
+        let read = InteractionNSView.fileURLs(on: pasteboard)
+        pasteboard.releaseGlobally()
+        record("strip drag carries the file", wrote && read == [all[2].url]
+                   && providerTypes.contains("public.file-url"),
+               "providerTypes=\(providerTypes) loaded=\(loaded?.lastPathComponent ?? "nil") readBack=\(read.map(\.lastPathComponent))")
+
+        let dropPoint = CGPoint(x: 3, y: model.canvasSize.height / 2)
+        canvasView.simulateDrop(of: read, at: dropPoint)
+        try await Task.sleep(for: .milliseconds(400))
+        let added = model.tiles.values.first { $0.url == all[2].url }
+        let addedRect = added.flatMap { model.frames()[$0.id] }
+        record("dropping a strip item on the canvas adds it where dropped",
+               model.tiles.count == 3 && addedRect.map { $0.minX < 1 } == true,
+               "tiles=\(model.tiles.count) newPane=\(addedRect.map { "\($0)" } ?? "nil")")
+
+        // Double-click alternative: adding directly also works.
+        model.add(urls: [all[0].url])
+        try await Task.sleep(for: .milliseconds(200))
+        record("adding from the strip again adds another pane", model.tiles.count == 4, "tiles=\(model.tiles.count)")
     }
 
     /// Mouse hover shows the video bar; clicking and dragging on its track seeks.

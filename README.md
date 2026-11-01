@@ -27,6 +27,13 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
 ## Using it
 
 - To add files, double-click them in Finder, drop them onto the window, or use **File > Open** (Cmd-O). Each time files are added, every pane is evened out to the same size.
+- **Folder strip** (left side):
+  - **File > Choose Strip Folder…** (Shift-Cmd-O) lists every image and video in a folder and all its subfolders, grouped by subfolder.
+  - Scroll up and down through them.
+  - **Drag** any thumbnail onto the canvas and it lands wherever you drop it, just like dragging from Finder. **Double-click** a thumbnail to add it straight away.
+  - Drag the bar on the strip's right edge to resize it.
+  - **View > Hide/Show Strip** (Ctrl-Cmd-S).
+  - The folder is remembered between launches. Use the refresh button to pick up new files.
 - **Drag a pane** and a blue preview shows where it will land:
   - Over another pane's **edge**, it splits that pane and takes that side.
   - Over another pane's **centre**, the two panes swap places.

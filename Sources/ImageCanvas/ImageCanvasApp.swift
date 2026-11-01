@@ -9,6 +9,7 @@ struct ImageCanvasApp: App {
     @State private var model = CanvasModel.shared
     @State private var layouts = LayoutStore.shared
     @State private var lock = AppLock.shared
+    @State private var strip = MediaStrip.shared
 
     var body: some Scene {
         // A single `Window` (not WindowGroup): opening more files never spawns new windows,
@@ -16,10 +17,19 @@ struct ImageCanvasApp: App {
         Window("Image Canvas", id: "canvas") {
             Group {
                 if lock.isLocked {
-                    // The canvas isn't built at all while locked: no images, no input, no drops.
+                    // Neither the canvas nor the strip is built while locked: no images, no input.
                     LockScreenView(lock: lock)
                 } else {
-                    CanvasView(model: model)
+                    HStack(spacing: 0) {
+                        if strip.isVisible {
+                            StripView(strip: strip, model: model)
+                                .frame(width: strip.width)
+                            StripResizeHandle(strip: strip)
+                        }
+                        CanvasView(model: model)
+                            .frame(minWidth: 320)
+                            .layoutPriority(1)
+                    }
                 }
             }
             .frame(minWidth: 480, minHeight: 320)
@@ -36,6 +46,14 @@ struct ImageCanvasApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Open…") { openPanel() }
                     .keyboardShortcut("o")
+                Button("Choose Strip Folder…") { strip.chooseFolder() }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+            }
+            CommandGroup(replacing: .sidebar) {
+                Button(strip.isVisible ? "Hide Strip" : "Show Strip") { strip.isVisible.toggle() }
+                    .keyboardShortcut("s", modifiers: [.command, .control])
+                Button("Rescan Strip Folder") { strip.rescan() }
+                    .disabled(strip.folder == nil)
             }
             CommandGroup(replacing: .saveItem) {
                 Button("Save Layout…") { layouts.promptSave(model) }
