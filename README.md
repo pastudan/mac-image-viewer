@@ -83,6 +83,8 @@ swift run         # runs unbundled (file-type registration needs the .app)
   - `InteractionView.swift` is a single AppKit view on top that receives all mouse, trackpad and file-drop input and maps it to panes through the model's geometry.
   - Videos play with `AVQueuePlayer` + `AVPlayerLooper`.
 
+The app icon is a De Stijl grid drawn in code. To change it, edit the colours and line positions in `scripts/make-icon.swift`, run `scripts/make-icon.sh` to regenerate `Resources/AppIcon.png` and `Resources/AppIcon.icns`, then run `scripts/build-app.sh`.
+
 End-to-end mouse check, which sends real mouse events through the window:
 
 ```sh

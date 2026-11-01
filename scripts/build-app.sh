@@ -22,10 +22,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/ImageCanvas"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
-if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
-  cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-  /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP/Contents/Info.plist" 2>/dev/null || true
-fi
+cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
 echo "==> Ad-hoc signing"
@@ -42,6 +39,8 @@ mkdir -p "$INSTALL_DIR"
 osascript -e "tell application id \"com.dan.ImageCanvas\" to quit" >/dev/null 2>&1 || true
 rm -rf "$INSTALL_DIR/$APP_NAME.app"
 cp -R "$APP" "$INSTALL_DIR/"
+# Nudge Finder and the Dock to pick up a changed icon.
+touch "$INSTALL_DIR/$APP_NAME.app"
 
 echo "==> Registering with LaunchServices"
 "$LSREGISTER" -f "$INSTALL_DIR/$APP_NAME.app"
