@@ -22,6 +22,8 @@ struct Tile: Identifiable {
     var content: TileContent = .loading
     /// Pinch zoom within the pane.
     var zoom: ZoomTransform = .identity
+    /// Width / height of the picture as shown (rotation applied). Nil until it loads.
+    var aspect: CGFloat?
 
     var name: String { url.lastPathComponent }
 
@@ -161,6 +163,15 @@ enum MediaLoader {
         if type.conforms(to: .image) { return .image }
         if type.conforms(to: .movie) || type.conforms(to: .video) { return .video }
         return nil
+    }
+
+    /// Width / height of a video as it plays, with its rotation applied (phone videos are tall).
+    static func videoAspect(_ asset: AVAsset) async -> CGFloat? {
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let (size, transform) = try? await track.load(.naturalSize, .preferredTransform) else { return nil }
+        let shown = CGRect(origin: .zero, size: size).applying(transform)
+        guard shown.width > 0, shown.height > 0 else { return nil }
+        return abs(shown.width) / abs(shown.height)
     }
 
     /// Decodes a downsampled, orientation-corrected image. Safe to call off the main thread.

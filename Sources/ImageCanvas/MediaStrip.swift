@@ -26,6 +26,11 @@ final class MediaStrip {
         }
     }
 
+    /// Hides the strip without touching the saved setting (self-test screenshots only:
+    /// the strip may show the user's own private folder).
+    var hiddenForCapture = false
+    var isShown: Bool { isVisible && !hiddenForCapture }
+
     private(set) var folder: URL?
     private(set) var result: FolderScanResult?
     private(set) var isScanning = false

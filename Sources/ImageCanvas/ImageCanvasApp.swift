@@ -21,7 +21,7 @@ struct ImageCanvasApp: App {
                     LockScreenView(lock: lock)
                 } else {
                     HStack(spacing: 0) {
-                        if strip.isVisible {
+                        if strip.isShown {
                             StripView(strip: strip, model: model)
                                 .frame(width: strip.width)
                             StripResizeHandle(strip: strip)
@@ -81,7 +81,9 @@ struct ImageCanvasApp: App {
                     .disabled(model.isEmpty)
             }
             CommandGroup(after: .toolbar) {
-                Toggle("Crop to Fill Panes", isOn: $model.cropToFill)
+                Toggle("Crop to Fill Panes", isOn: Binding(
+                    get: { model.cropToFill },
+                    set: { model.cropToFill = $0; if model.layoutIsAuto { model.refit(animated: true) } }))
                     .keyboardShortcut("f", modifiers: [.command, .option])
                 Divider()
                 Button("Zoom In") { model.zoomSelected(by: 1.25) }
@@ -96,8 +98,11 @@ struct ImageCanvasApp: App {
                 Divider()
             }
             CommandMenu("Arrange") {
-                Button("Even Out") { model.evenOut() }
+                Button("Best Fit") { model.refit(animated: true) }
                     .keyboardShortcut("g")
+                    .disabled(model.isEmpty)
+                Button("Even Out") { model.evenOut() }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
                     .disabled(model.isEmpty)
                 Button(model.expandedID == nil ? "Expand Selected to Fill Window" : "Return to Layout") {
                     if model.expandedID != nil { model.collapse() }
@@ -130,7 +135,7 @@ struct ImageCanvasApp: App {
         }
 
         Settings {
-            SettingsView(lock: lock)
+            SettingsView(lock: lock, model: model)
         }
     }
 

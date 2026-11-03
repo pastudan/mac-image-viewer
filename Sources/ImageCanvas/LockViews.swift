@@ -41,9 +41,29 @@ struct LockScreenView: View {
 /// Image Canvas > Settings… (Cmd-,).
 struct SettingsView: View {
     @Bindable var lock: AppLock
+    @Bindable var model: CanvasModel
 
     var body: some View {
         Form {
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Trim picture edges up to")
+                        Spacer()
+                        Text("\(Int((model.maxCrop * 100).rounded()))%")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $model.maxCrop, in: 0...0.25, step: 0.01)
+                }
+            } header: {
+                Text("Layout")
+            } footer: {
+                Text("Pictures are arranged to leave as little black space as possible. Trimming lets a picture grow slightly past its pane, cutting off a sliver of its edges to close the remaining gaps. 0% never trims. View > Crop to Fill Panes trims as much as needed.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Section {
                 Toggle("Require \(AppLock.methodName) to show images after the Mac sleeps",
                        isOn: $lock.requireOnWake)

@@ -44,7 +44,7 @@ struct CanvasView: View {
             .allowsHitTesting(false)
             .overlay(InteractionLayer(model: model))
             .onAppear { model.canvasSize = geo.size }
-            .onChange(of: geo.size) { _, size in model.canvasSize = size }
+            .onChange(of: geo.size) { _, size in model.canvasSizeChanged(size) }
         }
         .frame(minWidth: 480, minHeight: 320)
     }

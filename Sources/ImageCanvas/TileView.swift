@@ -63,15 +63,18 @@ struct TileView: View {
     /// The media, pinch-zoomed: drawn at `scale` times the pane size and shifted by the offset.
     private func zoomedContent(in size: CGSize) -> some View {
         let r = tile.zoom.contentRect(in: size)
-        return media
+        return media(in: r.size)
             .frame(width: r.width, height: r.height)
             .offset(x: r.minX, y: r.minY)
             .frame(width: size.width, height: size.height, alignment: .topLeading)
             .clipped()
     }
 
+    /// The picture at its smart-crop size: fitted, then enlarged until up to the allowed
+    /// share of its edges is trimmed, centred in `box` (the pane, or the zoomed pane).
     @ViewBuilder
-    private var media: some View {
+    private func media(in box: CGSize) -> some View {
+        let shown = tile.aspect.map { FitMath.displaySize(contentAspect: $0, in: box, maxCrop: model.effectiveCrop) } ?? box
         switch tile.content {
         case .loading:
             ProgressView().controlSize(.small)
@@ -80,11 +83,14 @@ struct TileView: View {
             Image(nsImage: image)
                 .resizable()
                 .interpolation(.high)
-                .aspectRatio(contentMode: model.cropToFill ? .fill : .fit)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: shown.width, height: shown.height)
+                .frame(width: box.width, height: box.height)
                 .clipped()
         case .video(let video):
-            PlayerLayerView(player: video.player, fill: model.cropToFill)
+            PlayerLayerView(player: video.player)
+                .frame(width: shown.width, height: shown.height)
+                .frame(width: box.width, height: box.height)
+                .clipped()
         }
     }
 }
@@ -199,10 +205,10 @@ private struct VideoBar: View {
     }
 }
 
-/// A bare AVPlayerLayer (no system controls). Never takes mouse input.
+/// A bare AVPlayerLayer (no system controls). Never takes mouse input. It's sized to the
+/// video's own shape by the caller, so filling the layer never distorts or letterboxes.
 struct PlayerLayerView: NSViewRepresentable {
     let player: AVPlayer
-    let fill: Bool
 
     func makeNSView(context: Context) -> PlayerNSView {
         let view = PlayerNSView()
@@ -212,7 +218,6 @@ struct PlayerLayerView: NSViewRepresentable {
 
     func updateNSView(_ view: PlayerNSView, context: Context) {
         if view.playerLayer.player !== player { view.playerLayer.player = player }
-        view.playerLayer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
     }
 
     static func dismantleNSView(_ view: PlayerNSView, coordinator: ()) {
@@ -226,7 +231,7 @@ final class PlayerNSView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        playerLayer.videoGravity = .resizeAspect
+        playerLayer.videoGravity = .resizeAspectFill
         playerLayer.backgroundColor = NSColor.black.cgColor
     }
 

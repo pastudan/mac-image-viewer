@@ -13,6 +13,11 @@ typealias Layout = LayoutNode<UUID>
 final class CanvasModel {
     static let shared = CanvasModel()
 
+    init() {
+        let saved = UserDefaults.standard.object(forKey: Self.maxCropKey) as? Double
+        maxCrop = CGFloat(saved ?? Double(FitMath.defaultMaxCrop))
+    }
+
     private(set) var tiles: [UUID: Tile] = [:]
     private(set) var layout: Layout?
     var selectedID: UUID?
@@ -24,6 +29,19 @@ final class CanvasModel {
     private(set) var expandedID: UUID?
     /// Crop media to fill each tile instead of letterboxing.
     var cropToFill = false
+    /// How much of a picture's edges may be trimmed to close black bars (0...0.25).
+    var maxCrop: CGFloat {
+        didSet {
+            UserDefaults.standard.set(Double(maxCrop), forKey: Self.maxCropKey)
+            if layoutIsAuto { refit(animated: true) }
+        }
+    }
+    /// The crop actually used for drawing and scoring.
+    var effectiveCrop: CGFloat { cropToFill ? 1 : maxCrop }
+    /// True while the layout is the app's own best fit. Dragging, snapping or moving a
+    /// divider makes it manual, and then window resizes leave it alone.
+    private(set) var layoutIsAuto = true
+    private static let maxCropKey = "layout.maxCrop"
     /// Current canvas size in points, kept up to date by CanvasView.
     var canvasSize = CGSize(width: 1280, height: 790)
 
@@ -109,9 +127,9 @@ final class CanvasModel {
 
     // MARK: Adding
 
-    /// Adds images and videos as tiles, then evens out the whole canvas so every pane gets
-    /// the same share. New files go last in reading order; a Finder drop puts them at the
-    /// drop position in that order instead.
+    /// Adds images and videos as tiles, then re-arranges everything for the least black
+    /// space (best fit). New files go last in reading order; a Finder drop puts them at
+    /// the drop position in that order instead.
     func add(urls: [URL], target: DropTarget<UUID>? = nil) {
         var added: [(id: UUID, url: URL, kind: MediaKind)] = []
         for url in urls {
@@ -134,8 +152,9 @@ final class CanvasModel {
             order += newIDs
         }
 
+        layoutIsAuto = true
         withAnimation(Self.spring) {
-            layout = Layout.balanced(order, in: canvasSize)
+            layout = bestLayout(order) ?? Layout.balanced(order, in: canvasSize)
             expandedID = nil
         }
         selectedID = newIDs.last
@@ -149,16 +168,34 @@ final class CanvasModel {
                 let cg = await Task.detached(priority: .userInitiated) { MediaLoader.loadImage(url) }.value
                 guard let cg else { return failed(id, url) }
                 tiles[id]?.content = .image(NSImage(cgImage: cg, size: CGSize(width: cg.width, height: cg.height)))
+                aspectArrived(id, CGFloat(cg.width) / CGFloat(max(cg.height, 1)))
             case .video:
                 let asset = AVURLAsset(url: url)
                 let playable = (try? await asset.load(.isPlayable)) ?? false
                 guard playable else { return failed(id, url) }
                 let duration = (try? await asset.load(.duration))?.seconds ?? 0
+                let aspect = await MediaLoader.videoAspect(asset)
                 guard tiles[id] != nil else { return } // removed while loading
                 let video = LoopingVideo(asset: asset, duration: duration.isFinite ? duration : 0)
                 tiles[id]?.content = .video(video)
                 AppLock.shared.didLoad(video, id: id)
+                aspectArrived(id, aspect ?? 16.0 / 9.0)
             }
+        }
+    }
+
+    private var refitPending = false
+
+    /// A picture's shape is known now: re-fit, coalescing a burst of loads into one pass.
+    private func aspectArrived(_ id: UUID, _ aspect: CGFloat) {
+        guard tiles[id] != nil else { return }
+        tiles[id]?.aspect = aspect
+        guard layoutIsAuto, !refitPending else { return }
+        refitPending = true
+        Task {
+            try? await Task.sleep(for: .milliseconds(60))
+            refitPending = false
+            if layoutIsAuto { refit(animated: true) }
         }
     }
 
@@ -166,7 +203,53 @@ final class CanvasModel {
         NSLog("Image Canvas: could not open \(url.path)")
         guard tiles[id] != nil else { return }
         remove(id)
-        evenOut() // keep the panes even after a file that never loaded drops out
+        if layoutIsAuto { refit(animated: true) } // close the gap a file that never loaded leaves
+    }
+
+    // MARK: Best fit
+
+    /// The arrangement with the least black space for these tiles, in roughly this order.
+    func bestLayout(_ order: [UUID]) -> Layout? {
+        let items = order.map { (id: $0, aspect: tiles[$0]?.aspect ?? 1) }
+        return BestFit.layout(items, in: canvasSize, maxCrop: effectiveCrop)
+    }
+
+    /// Re-runs best fit on the current tiles and makes the layout automatic again.
+    func refit(animated: Bool) {
+        guard let ids = layout?.ids, let best = bestLayout(ids) else { return }
+        layoutIsAuto = true
+        if best == layout { return }
+        if animated {
+            withAnimation(Self.spring) { layout = best }
+        } else {
+            layout = best
+        }
+    }
+
+    /// The share of the canvas (0...1) left black by the current layout.
+    var blackShare: CGFloat {
+        guard let layout else { return 0 }
+        let aspects = tiles.mapValues { $0.aspect ?? 1 }
+        return BestFit.score(layout, aspects: aspects, in: canvasSize, maxCrop: effectiveCrop).black
+    }
+
+    /// Window resized: re-fit shortly after it stops changing, unless arranged by hand.
+    private var resizeTask: Task<Void, Never>?
+    func canvasSizeChanged(_ size: CGSize) {
+        guard size != canvasSize else { return }
+        canvasSize = size
+        guard layoutIsAuto else { return }
+        resizeTask?.cancel()
+        resizeTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, layoutIsAuto else { return }
+            refit(animated: true)
+        }
+    }
+
+    /// The user arranged something by hand; stop re-fitting automatically.
+    func markManual() {
+        layoutIsAuto = false
     }
 
     // MARK: Removing
@@ -181,6 +264,7 @@ final class CanvasModel {
         }
         if selectedID == id { selectedID = layout?.ids.last }
         if hoveredID == id { hoveredID = nil }
+        if layoutIsAuto { refit(animated: true) }
     }
 
     func removeSelected() {
@@ -196,18 +280,21 @@ final class CanvasModel {
         hoveredID = nil
         expandedID = nil
         activeDividerPath = nil
+        layoutIsAuto = true
     }
 
     // MARK: Arranging
 
-    /// Arrange > Even Out: every tile gets the same share of the canvas.
+    /// Arrange > Even Out: every tile gets the same share of the canvas (a manual layout).
     func evenOut() {
         guard let ids = layout?.ids else { return }
+        markManual()
         withAnimation(Self.spring) { layout = Layout.balanced(ids, in: canvasSize) }
     }
 
     func snap(_ id: UUID, to zone: SnapZone) {
         if zone == .full { return toggleExpand(id) }
+        markManual()
         withAnimation(Self.spring) {
             expandedID = nil
             layout = Layout.snapping(id, to: zone, in: layout)
@@ -229,6 +316,7 @@ final class CanvasModel {
         let ratio = divider.axis == .columns
             ? (point.x - c.minX) / max(c.width, 1)
             : (point.y - c.minY) / max(c.height, 1)
+        markManual()
         layout = layout?.settingRatio(ratio, at: divider.path)
     }
 
@@ -333,6 +421,7 @@ final class CanvasModel {
         withAnimation(Self.spring) {
             if let dropTarget, let layout {
                 self.layout = layout.applying(dropTarget, moving: id, in: canvasSize)
+                markManual()
             }
             draggingID = nil
             dragTranslation = .zero
@@ -403,6 +492,7 @@ final class CanvasModel {
             restored = Layout.adding(ids[index]!, to: restored, in: canvasSize)
         }
         layout = restored
+        markManual() // a saved layout is kept exactly as saved
         selectedID = layout?.ids.first
         for (_, id) in ids.sorted(by: { $0.key < $1.key }) {
             if let tile = tiles[id] { load(id, url: tile.url, kind: tile.kind) }

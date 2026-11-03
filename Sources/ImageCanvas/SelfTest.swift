@@ -16,14 +16,18 @@ enum SelfTest {
         // File arguments, skipping flags and the value after --strip-folder.
         var rest: [String] = []
         var skipNext = false
+        var inFitList = false
         for arg in args.dropFirst(flag + 2) {
             if skipNext { skipNext = false; continue }
             if arg == "--strip-folder" { skipNext = true; continue }
-            if !arg.hasPrefix("--") { rest.append(arg) }
+            if arg.hasPrefix("--") { inFitList = arg == "--fit-images"; continue }
+            if !inFitList { rest.append(arg) }
         }
         let files = rest.map { URL(fileURLWithPath: $0) }
         let images = files.filter { MediaLoader.kind(of: $0) == .image }
         let videos = files.filter { MediaLoader.kind(of: $0) == .video }
+        // The user's own strip folder may be private; keep it off screen for the whole run.
+        MediaStrip.shared.hiddenForCapture = true
         Task { @MainActor in
             var results: [[String: Any]] = []
             let record: (String, Bool, String) -> Void = { name, passed, detail in
@@ -41,6 +45,10 @@ enum SelfTest {
                 if let folderArg = args.firstIndex(of: "--strip-folder"), args.count > folderArg + 1 {
                     try await runStrip(folder: URL(fileURLWithPath: args[folderArg + 1]), record: record)
                 }
+                if let fitArg = args.firstIndex(of: "--fit-images") {
+                    let fitFiles = args[(fitArg + 1)...].prefix { !$0.hasPrefix("--") }.map { URL(fileURLWithPath: $0) }
+                    try await runBestFit(files: fitFiles, record: record)
+                }
             } catch {
                 results.append(["name": "harness", "passed": false, "detail": "\(error)"])
             }
@@ -49,6 +57,9 @@ enum SelfTest {
             if args.contains("--hold") {
                 // Leave a zoomed, hovered layout on screen for a window-only screenshot.
                 let model = CanvasModel.shared
+                // Never show the user's own strip folder in a capture. --hold-strip shows the
+                // strip, but only after pointing it at the test folder below.
+                MediaStrip.shared.hiddenForCapture = true
                 if args.contains("--hold-strip"), let folderArg = args.firstIndex(of: "--strip-folder") {
                     // Strip showing the folder, with a couple of items already on the canvas.
                     // The user's own strip folder setting is put back afterwards.
@@ -59,6 +70,7 @@ enum SelfTest {
                     if let savedFolder { defaults.set(savedFolder, forKey: "strip.folderPath") }
                     else { defaults.removeObject(forKey: "strip.folderPath") }
                     await strip.waitForScan()
+                    strip.hiddenForCapture = false // now showing only the test folder
                     model.removeAll()
                     model.add(urls: Array((strip.result?.sections.flatMap(\.items) ?? []).prefix(2)).map(\.url))
                     try? await Task.sleep(for: .milliseconds(1500)) // thumbnails
@@ -71,8 +83,23 @@ enum SelfTest {
                     }
                     try? await Task.sleep(for: .milliseconds(1500)) // let the hovered clip play a little
                 }
-                model.evenOut()
-                if args.contains("--hold-locked") {
+                let holdFit = args.contains("--hold-fit")
+                if holdFit, let fitArg = args.firstIndex(of: "--fit-images") {
+                    // The mixed-shape pictures, best fit (or even split with --hold-even).
+                    let fitFiles = args[(fitArg + 1)...].prefix { !$0.hasPrefix("--") }.map { URL(fileURLWithPath: $0) }
+                    model.removeAll()
+                    model.add(urls: fitFiles)
+                    for _ in 0..<60 where !model.tiles.values.allSatisfy({ $0.aspect != nil && $0.isLoaded }) {
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                    try? await Task.sleep(for: .milliseconds(400))
+                    if args.contains("--hold-even") { model.evenOut() } else { model.refit(animated: false) }
+                } else {
+                    model.evenOut()
+                }
+                if holdFit {
+                    // Nothing else; just the arrangement.
+                } else if args.contains("--hold-locked") {
                     AppLock.shared.lock()
                 } else if let id = model.layout?.ids.first, let pane = model.paneRect(id) {
                     if model.tiles[id]?.video != nil {
@@ -94,9 +121,11 @@ enum SelfTest {
                 NSApp.activate()
                 NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
                 try? await Task.sleep(for: .seconds(1))
-                let frames = model.layout?.leafFrames(in: model.canvasRect).map {
+                var frames = model.layout?.leafFrames(in: model.canvasRect).map {
                     "\(model.tiles[$0.id]?.name ?? "?") \($0.rect) zoom=\(model.tiles[$0.id]?.zoom.scale ?? 0)"
                 } ?? []
+                frames.append(String(format: "black=%.1f%% canvas=%.0fx%.0f", model.blackShare * 100,
+                                     model.canvasSize.width, model.canvasSize.height))
                 try? frames.joined(separator: "\n").write(to: report.appendingPathExtension("frames"),
                                                            atomically: true, encoding: .utf8)
                 try? await Task.sleep(for: .seconds(6))
@@ -187,6 +216,70 @@ enum SelfTest {
                "locked=\(lock.isLocked) rate=\(player.player.rate)")
     }
 
+    /// Best fit on pictures of mixed shapes: much less black than an even split, every
+    /// pane trimmed by no more than the allowance, and a manual edit stops auto re-fitting.
+    private static func runBestFit(files: [URL], record: (String, Bool, String) -> Void) async throws {
+        let model = CanvasModel.shared
+        model.removeAll()
+        model.add(urls: files)
+        for _ in 0..<100 where !(model.tiles.count == files.count && model.tiles.values.allSatisfy { $0.aspect != nil }) {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try await Task.sleep(for: .milliseconds(600))
+        guard model.tiles.count == files.count else { throw Failure(description: "fit images never loaded") }
+        let shapes = model.layout?.ids.compactMap { id in model.tiles[id].map { String(format: "%@ %.2f", $0.name, $0.aspect ?? 0) } } ?? []
+
+        let fitted = model.layout
+        let fittedBlack = model.blackShare
+        model.evenOut()
+        let evenBlack = model.blackShare
+        model.refit(animated: false)
+        let refitBlack = model.blackShare
+        record("best fit leaves much less black than an even split",
+               fittedBlack < evenBlack * 0.5 && fittedBlack < 0.12 && abs(refitBlack - fittedBlack) < 0.001,
+               String(format: "bestFit=%.1f%% even=%.1f%% (window %.0fx%.0f) shapes=%@",
+                      fittedBlack * 100, evenBlack * 100, model.canvasSize.width, model.canvasSize.height,
+                      shapes.joined(separator: ", ")))
+
+        // No picture loses more than the allowed share of its edges.
+        var worstTrim: CGFloat = 0
+        for (id, rect) in model.frames() {
+            guard let aspect = model.tiles[id]?.aspect else { continue }
+            let pane = rect.insetBy(dx: CanvasModel.gutter, dy: CanvasModel.gutter).size
+            worstTrim = max(worstTrim, FitMath.trimmed(contentAspect: aspect, in: pane, maxCrop: model.effectiveCrop))
+        }
+        record("no picture is trimmed by more than the allowance", worstTrim <= model.effectiveCrop + 0.001,
+               String(format: "worst trim %.1f%% (allowed %.0f%%)", worstTrim * 100, model.effectiveCrop * 100))
+
+        // Adding a picture re-fits automatically.
+        if let extra = files.first {
+            model.add(urls: [extra])
+            for _ in 0..<50 where !model.tiles.values.allSatisfy({ $0.aspect != nil }) {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            try await Task.sleep(for: .milliseconds(300))
+            record("adding a picture keeps the layout tight", model.layoutIsAuto && model.blackShare < 0.15,
+                   String(format: "tiles=%d black=%.1f%%", model.tiles.count, model.blackShare * 100))
+        }
+
+        // A manual edit (moving a divider) turns auto re-fit off: a resize then changes nothing.
+        if let divider = model.layout?.dividers(in: model.canvasRect).first {
+            let c = divider.container
+            model.setRatio(of: divider, to: CGPoint(x: c.minX + c.width * 0.3, y: c.minY + c.height * 0.3))
+            let manual = model.layout
+            let size = model.canvasSize
+            model.canvasSizeChanged(CGSize(width: size.width - 40, height: size.height))
+            try await Task.sleep(for: .milliseconds(500))
+            let untouched = model.layout == manual
+            model.canvasSizeChanged(size)
+            // Best Fit (Cmd-G) brings it back.
+            model.refit(animated: false)
+            record("manual edits stop auto re-fit; Best Fit restores it",
+                   !(model.layoutIsAuto && !untouched) && untouched && model.layoutIsAuto && fitted != nil,
+                   "layoutKeptAfterResize=\(untouched) autoAfterBestFit=\(model.layoutIsAuto)")
+        }
+    }
+
     /// The folder strip: scanning, the strip on screen, and dragging an item onto the canvas.
     /// The drag payload is the exact provider the strip hands to AppKit, written to a real
     /// pasteboard and read back by the canvas's drop code. The previous folder setting is restored.
@@ -206,6 +299,8 @@ enum SelfTest {
         model.removeAll()
         strip.setFolder(folder)
         await strip.waitForScan()
+        strip.hiddenForCapture = false // showing only the test folder now
+        defer { strip.hiddenForCapture = true }
         let result = strip.result
         let names = result?.sections.flatMap { $0.items.map(\.name) } ?? []
         record("strip scans folder and subfolders",
@@ -416,6 +511,9 @@ enum SelfTest {
             throw Failure(description: "interaction view never appeared")
         }
         try await Task.sleep(for: .milliseconds(400))
+        // The mouse checks below assume four equal quadrants.
+        model.evenOut()
+        try await Task.sleep(for: .milliseconds(450))
         record("setup", model.tiles.count == 4, "tiles=\(model.tiles.count) canvas=\(model.canvasSize)")
 
         func center(_ id: UUID) -> CGPoint {

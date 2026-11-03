@@ -26,7 +26,7 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
 
 ## Using it
 
-- To add files, double-click them in Finder, drop them onto the window, or use **File > Open** (Cmd-O). Each time files are added, every pane is evened out to the same size.
+- To add files, double-click them in Finder, drop them onto the window, or use **File > Open** (Cmd-O). Each time files are added, everything is re-arranged to leave as little black space as possible (see **Best fit** below).
 - **Folder strip** (left side):
   - **File > Choose Strip Folder…** (Shift-Cmd-O) lists every image and video in a folder and all its subfolders, grouped by subfolder.
   - Scroll up and down through them.
@@ -48,8 +48,12 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
   - **Cmd = / Cmd - / Cmd 0** zoom the selected pane in, out, or back to fit.
 - **Double-click** a pane to expand it to the whole window, and double-click again to return.
 - **File > Save Layout…** (Cmd-S) saves the open files, the pane arrangement and each pane's zoom. **File > Open Layout** restores one, and **File > Show Layouts Folder** shows where they're kept: `~/Library/Application Support/Image Canvas/Layouts/` (one JSON file each). Panes whose files have since moved are skipped, and you're told which ones.
-- **Arrange > Even Out** (Cmd-G) gives every pane the same size.
-- **View > Crop to Fill Panes** (Opt-Cmd-F) crops media to fill each pane instead of letterboxing it.
+- **Best fit:** the app looks at each picture's shape and picks the arrangement, order and pane sizes that leave the least black around them:
+  - Tall phone photos get tall panes and panoramas get wide ones.
+  - Each picture may also be trimmed by up to 10% at its edges to close the last gaps. Change this in **Settings > Layout**, from 0% to 25%.
+  - It re-runs when you add or remove files, and when you resize the window. Once you drag, snap or resize panes yourself, your arrangement is kept until you add something or choose **Arrange > Best Fit** (Cmd-G).
+- **Arrange > Even Out** (Shift-Cmd-G) gives every pane the same size instead.
+- **View > Crop to Fill Panes** (Opt-Cmd-F) crops media to fill each pane completely.
 - **Videos** loop and start muted:
   - Each video shows its **runtime** in the bottom-right corner.
   - **Hover** a video to bring up its control bar: play/pause, mute, the current time, a seek bar and the runtime. **Click or drag along the seek bar** to jump around the video; it pauses while you hold and resumes when you let go.
@@ -84,6 +88,8 @@ swift run         # runs unbundled (file-type registration needs the .app)
 - `Sources/CanvasCore/` holds the geometry and is unit tested:
   - `Layout.swift` is the stained-glass layout. It's a binary tree of splits whose leaves are panes, so the panes always cover the canvas exactly. It also handles hit testing and the JSON encoding.
   - `SnapZone.swift` detects window edges and corners.
+  - `Fit.swift` is the edge-trimming maths: how big a picture is drawn in a pane, and how much of the pane it covers.
+  - `BestFit.swift` is the layout search. It places every divider where both sides get their contents' natural shape, then finds the split tree and order whose combined shape is closest to the window. Each search is limited to about 30 ms, and the result is never worse than an even split.
   - `Zoom.swift` covers pinch zoom and the hover-button positions.
   - `LayoutDocument.swift` is the saved-layout file format.
 - `Sources/ImageCanvas/` holds the SwiftUI app:
