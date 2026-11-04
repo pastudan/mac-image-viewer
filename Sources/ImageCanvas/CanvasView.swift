@@ -96,6 +96,10 @@ private struct EmptyStateView: View {
             Text("Everything you open shares the window like panes of stained glass.\nDrag a pane onto another to split it, or to an edge or corner to snap it.")
                 .font(.callout)
                 .multilineTextAlignment(.center)
+            Text("Shift-Command-R restores your last view (Touch ID required).")
+                .font(.callout)
+                .foregroundStyle(.tertiary)
+                .padding(.top, 6)
         }
         .foregroundStyle(.secondary)
     }

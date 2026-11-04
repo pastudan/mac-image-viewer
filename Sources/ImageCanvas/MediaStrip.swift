@@ -34,8 +34,13 @@ final class MediaStrip {
     private(set) var folder: URL?
     private(set) var result: FolderScanResult?
     private(set) var isScanning = false
-    var isVisible: Bool {
-        didSet { UserDefaults.standard.set(isVisible, forKey: Key.visible) }
+    /// Hidden at every launch; shown only when asked (View > Show Strip, choosing a folder,
+    /// or Restore Last View). Whether it was showing is part of the saved last view.
+    var isVisible = false {
+        didSet {
+            if isVisible { start() }
+            if isVisible != oldValue { LastView.shared.noteChange() }
+        }
     }
 
     private var scanTask: Task<Void, Never>?
@@ -43,7 +48,7 @@ final class MediaStrip {
 
     init() {
         let defaults = UserDefaults.standard
-        isVisible = defaults.object(forKey: Key.visible) as? Bool ?? true
+        defaults.removeObject(forKey: Key.visible) // no longer persisted: the app opens empty
         let savedWidth = defaults.object(forKey: Key.width) as? Double ?? 240
         width = min(max(CGFloat(savedWidth), Self.widthRange.lowerBound), Self.widthRange.upperBound)
         if let path = defaults.string(forKey: Key.folder), FileManager.default.fileExists(atPath: path) {

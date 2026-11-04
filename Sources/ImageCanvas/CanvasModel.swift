@@ -19,7 +19,11 @@ final class CanvasModel {
     }
 
     private(set) var tiles: [UUID: Tile] = [:]
-    private(set) var layout: Layout?
+    /// Every change to the arrangement is remembered as the "last view" (restorable later
+    /// behind Touch ID). Zoom changes call `noteChange` themselves.
+    private(set) var layout: Layout? {
+        didSet { if layout != oldValue { LastView.shared.noteChange() } }
+    }
     var selectedID: UUID?
     /// Pane under the pointer; its hover controls are shown.
     var hoveredID: UUID?
@@ -28,7 +32,9 @@ final class CanvasModel {
     /// Double-clicked tile shown over the whole canvas; the layout underneath is untouched.
     private(set) var expandedID: UUID?
     /// Crop media to fill each tile instead of letterboxing.
-    var cropToFill = false
+    var cropToFill = false {
+        didSet { if cropToFill != oldValue { LastView.shared.noteChange() } }
+    }
     /// How much of a picture's edges may be trimmed to close black bars (0...0.25).
     var maxCrop: CGFloat {
         didSet {
@@ -326,6 +332,7 @@ final class CanvasModel {
         guard let pane = paneRect(id), let current = tiles[id]?.zoom else { return }
         let local = CGPoint(x: point.x - pane.minX, y: point.y - pane.minY)
         tiles[id]?.zoom = current.zoomed(by: factor, at: local, in: pane.size)
+        LastView.shared.noteChange()
     }
 
     /// Zooms around the centre of the pane (menu and keyboard).
@@ -337,10 +344,12 @@ final class CanvasModel {
     func pan(_ id: UUID, by delta: CGSize) {
         guard let pane = paneRect(id), let current = tiles[id]?.zoom, current.isZoomed else { return }
         tiles[id]?.zoom = current.panned(by: delta, in: pane.size)
+        LastView.shared.noteChange()
     }
 
     func resetZoom(_ id: UUID) {
         withAnimation(.easeOut(duration: 0.2)) { tiles[id]?.zoom = .identity }
+        LastView.shared.noteChange()
     }
 
     // MARK: Video

@@ -28,11 +28,20 @@ enum SelfTest {
         let videos = files.filter { MediaLoader.kind(of: $0) == .video }
         // The user's own strip folder may be private; keep it off screen for the whole run.
         MediaStrip.shared.hiddenForCapture = true
+        // Never read or overwrite the user's real last view.
+        LastView.shared.fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selftest-last-view-\(UUID().uuidString).json")
+        // Captured before anything else runs: what the window shows at launch.
+        let launchState = (tiles: CanvasModel.shared.tiles.count, stripVisible: MediaStrip.shared.isVisible)
         Task { @MainActor in
             var results: [[String: Any]] = []
             let record: (String, Bool, String) -> Void = { name, passed, detail in
                 results.append(["name": name, "passed": passed, "detail": detail])
             }
+            defer { LastView.shared.forget() }
+            record("app opens empty with the strip hidden",
+                   launchState.tiles == 0 && !launchState.stripVisible,
+                   "tilesAtLaunch=\(launchState.tiles) stripVisibleAtLaunch=\(launchState.stripVisible)")
             do {
                 if images.count >= 4 {
                     try await run(files: Array(images.prefix(4)), record: record)
@@ -48,6 +57,9 @@ enum SelfTest {
                 if let fitArg = args.firstIndex(of: "--fit-images") {
                     let fitFiles = args[(fitArg + 1)...].prefix { !$0.hasPrefix("--") }.map { URL(fileURLWithPath: $0) }
                     try await runBestFit(files: fitFiles, record: record)
+                }
+                if images.count >= 2 {
+                    try await runLastView(files: Array(images.prefix(3)), record: record)
                 }
             } catch {
                 results.append(["name": "harness", "passed": false, "detail": "\(error)"])
@@ -216,6 +228,82 @@ enum SelfTest {
                "locked=\(lock.isLocked) rate=\(player.player.rate)")
     }
 
+    /// Restore Last View: the session is remembered as you go, and comes back only after
+    /// authentication. The real sensor can't be touched, so the authenticator is stubbed;
+    /// the snapshot file is a scratch file (set at the start of the run).
+    private static func runLastView(files: [URL], record: (String, Bool, String) -> Void) async throws {
+        let model = CanvasModel.shared
+        let last = LastView.shared
+        let savedAuth = last.authenticator
+        defer { last.authenticator = savedAuth }
+
+        // Build a view: pictures, a manual divider move, a zoom.
+        model.removeAll()
+        model.add(urls: files)
+        for _ in 0..<60 where !model.tiles.values.allSatisfy({ $0.isLoaded && $0.aspect != nil }) {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        if let d = model.layout?.dividers(in: model.canvasRect).first {
+            model.setRatio(of: d, to: CGPoint(x: d.container.minX + d.container.width * 0.35,
+                                              y: d.container.minY + d.container.height * 0.35))
+        }
+        if let id = model.layout?.ids.first, let pane = model.paneRect(id) {
+            model.zoom(id, by: 2, at: CGPoint(x: pane.midX, y: pane.midY))
+        }
+        try await Task.sleep(for: .milliseconds(1200)) // let the coalesced save happen
+        let before = model.layout!.leafFrames(in: model.canvasRect).map {
+            ($0.rect, model.tiles[$0.id]!.url.path, model.tiles[$0.id]!.zoom)
+        }
+        record("last view is remembered as you work", last.hasSnapshot && (last.load()?.document.items.count ?? 0) == files.count,
+               "saved=\(last.hasSnapshot) items=\(last.load()?.document.items.count ?? 0)")
+
+        // "Relaunch": clear everything.
+        model.removeAll()
+        let emptyAfterClear = model.isEmpty && last.hasSnapshot // clearing doesn't erase the saved view
+
+        // Cancelled and failed authentication restore nothing.
+        var prompts = 0
+        last.authenticator = { _ in prompts += 1; return .cancelled }
+        await last.restore()
+        let afterCancel = model.tiles.count
+        last.authenticator = { _ in prompts += 1; return .failed("Touch ID didn't match.") }
+        await last.restore()
+        let afterFail = model.tiles.count
+        record("restore asks for Touch ID; cancel or failure shows nothing",
+               emptyAfterClear && prompts == 2 && afterCancel == 0 && afterFail == 0,
+               "prompts=\(prompts) tilesAfterCancel=\(afterCancel) tilesAfterFail=\(afterFail)")
+
+        // Success brings back the same panes, sizes and zoom.
+        last.authenticator = { _ in prompts += 1; return .success }
+        await last.restore()
+        try await Task.sleep(for: .milliseconds(300))
+        let after = model.layout?.leafFrames(in: model.canvasRect).map {
+            ($0.rect, model.tiles[$0.id]!.url.path, model.tiles[$0.id]!.zoom)
+        } ?? []
+        let same = before.count == after.count && zip(before, after).allSatisfy {
+            abs($0.0.minX - $1.0.minX) < 0.5 && abs($0.0.width - $1.0.width) < 0.5
+                && abs($0.0.minY - $1.0.minY) < 0.5 && abs($0.0.height - $1.0.height) < 0.5
+                && $0.1 == $1.1 && $0.2 == $1.2
+        }
+        record("after Touch ID the last view comes back exactly", same && prompts == 3,
+               "panes before=\(before.count) after=\(after.count) prompts=\(prompts)")
+
+        // Locked app: restore does nothing and doesn't prompt.
+        let lock = AppLock.shared
+        let savedLockAuth = lock.authenticator
+        lock.authenticator = { _ in .cancelled }
+        defer { lock.authenticator = savedLockAuth }
+        model.removeAll()
+        lock.lock()
+        await last.restore()
+        let whileLocked = model.tiles.count
+        lock.authenticator = { _ in .success }
+        await lock.unlock()
+        record("restore is blocked while the app is locked", whileLocked == 0 && prompts == 3,
+               "tilesWhileLocked=\(whileLocked) prompts=\(prompts)")
+    }
+
     /// Best fit on pictures of mixed shapes: much less black than an even split, every
     /// pane trimmed by no more than the allowance, and a manual edit stops auto re-fitting.
     private static func runBestFit(files: [URL], record: (String, Bool, String) -> Void) async throws {
@@ -288,12 +376,10 @@ enum SelfTest {
         let strip = MediaStrip.shared
         let defaults = UserDefaults.standard
         let savedFolder = defaults.string(forKey: "strip.folderPath")
-        let savedVisible = defaults.object(forKey: "strip.visible")
         defer {
             if let savedFolder { defaults.set(savedFolder, forKey: "strip.folderPath") }
             else { defaults.removeObject(forKey: "strip.folderPath") }
-            if let savedVisible { defaults.set(savedVisible, forKey: "strip.visible") }
-            else { defaults.removeObject(forKey: "strip.visible") }
+            strip.isVisible = false
         }
 
         model.removeAll()

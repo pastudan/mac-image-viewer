@@ -32,7 +32,7 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
   - Scroll up and down through them.
   - **Drag** any thumbnail onto the canvas and it lands wherever you drop it, just like dragging from Finder. **Double-click** a thumbnail to add it straight away.
   - Drag the bar on the strip's right edge to resize it.
-  - **View > Hide/Show Strip** (Ctrl-Cmd-S).
+  - **View > Hide/Show Strip** (Ctrl-Cmd-S). The strip is always hidden when the app opens.
   - The folder is remembered between launches. Use the refresh button to pick up new files.
 - **Drag a pane** and a blue preview shows where it will land:
   - Over another pane's **edge**, it splits that pane and takes that side.
@@ -66,6 +66,13 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
   - **Ctrl-Opt + U / I / J / K** for quarters.
   - **Ctrl-Opt + Return** to expand.
 - Right-click a pane for Snap To, Play/Mute, Show in Finder and Remove.
+
+## Opening the app, and Restore Last View
+
+- Image Canvas always opens **empty**, with no images and no strip.
+- **File > Restore Last View** (Shift-Cmd-R) brings back where you left off: the same pictures, pane sizes, zoom and strip. It asks for **Touch ID** first, or your Mac password. Cancelling or a failed fingerprint shows nothing.
+- The last view is saved as you work, and when you quit, to `~/Library/Application Support/Image Canvas/Last View.json`. It holds file paths and the arrangement, not the pictures themselves. Opening the app and quitting without doing anything leaves the previous saved view alone.
+- **Restore Last View** is unavailable while the app is locked.
 
 ## Privacy lock (optional)
 

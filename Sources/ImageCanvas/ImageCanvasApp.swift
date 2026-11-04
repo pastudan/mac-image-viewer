@@ -10,6 +10,7 @@ struct ImageCanvasApp: App {
     @State private var layouts = LayoutStore.shared
     @State private var lock = AppLock.shared
     @State private var strip = MediaStrip.shared
+    @State private var lastView = LastView.shared
 
     var body: some Scene {
         // A single `Window` (not WindowGroup): opening more files never spawns new windows,
@@ -46,6 +47,9 @@ struct ImageCanvasApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Open…") { openPanel() }
                     .keyboardShortcut("o")
+                Button("Restore Last View") { Task { await lastView.restore() } }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    .disabled(lock.isLocked || lastView.isRestoring)
                 Button("Choose Strip Folder…") { strip.chooseFolder() }
                     .keyboardShortcut("o", modifiers: [.command, .shift])
             }
@@ -192,4 +196,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        guard !CommandLine.arguments.contains("--self-test") else { return }
+        MainActor.assumeIsolated { LastView.shared.saveNow() }
+    }
 }
