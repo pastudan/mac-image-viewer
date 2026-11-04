@@ -16,56 +16,45 @@ struct ImageCanvasApp: App {
         // A single `Window` (not WindowGroup): opening more files never spawns new windows,
         // everything joins the one canvas.
         Window("Image Canvas", id: "canvas") {
-            Group {
-                if lock.isLocked {
-                    // Neither the canvas nor the strip is built while locked: no images, no input.
-                    LockScreenView(lock: lock)
-                } else {
-                    HStack(spacing: 0) {
-                        if strip.isShown {
-                            StripView(strip: strip, model: model)
-                                .frame(width: strip.width)
-                            StripResizeHandle(strip: strip)
-                        }
-                        CanvasView(model: model)
-                            .frame(minWidth: 320)
-                            .layoutPriority(1)
-                    }
-                    .transition(.identity)
-                    .animation(.easeOut(duration: 0.18), value: strip.isVisible)
+            HStack(spacing: 0) {
+                if strip.isShown {
+                    StripView(strip: strip, model: model)
+                        .frame(width: strip.width)
+                    StripResizeHandle(strip: strip)
                 }
+                CanvasView(model: model)
+                    .frame(minWidth: 320)
+                    .layoutPriority(1)
             }
+            .animation(.easeOut(duration: 0.18), value: strip.isVisible)
             .toolbar {
                 // Title-bar button that hides and shows the strip; always there, so a hidden
-                // strip is one click away. Not shown while locked.
-                if !lock.isLocked {
-                    ToolbarItem(placement: .navigation) {
-                        Button {
-                            withAnimation(.easeOut(duration: 0.18)) { strip.isVisible.toggle() }
-                        } label: {
-                            Image(systemName: "sidebar.left")
-                        }
-                        .help(strip.isVisible ? "Hide strip (Control-Command-S)" : "Show strip (Control-Command-S)")
+                // strip is one click away.
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.18)) { strip.isVisible.toggle() }
+                    } label: {
+                        Image(systemName: "sidebar.left")
                     }
+                    .help(strip.isVisible ? "Hide strip (Control-Command-S)" : "Show strip (Control-Command-S)")
                 }
             }
             .frame(minWidth: 480, minHeight: 320)
-            .navigationTitle(lock.isLocked ? "Image Canvas" : title)
+            .navigationTitle(title)
         }
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Make Default Viewer…") { DefaultHandler.makeDefault() }
-                Button("Lock Now") { lock.lock() }
+                Button("Clear for Privacy") { lock.clearNow() }
                     .keyboardShortcut("l", modifiers: [.control, .command])
-                    .disabled(lock.isLocked)
             }
             CommandGroup(replacing: .newItem) {
                 Button("Open…") { openPanel() }
                     .keyboardShortcut("o")
                 Button("Restore Last View") { Task { await lastView.restore() } }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
-                    .disabled(lock.isLocked || lastView.isRestoring)
+                    .disabled(lastView.isRestoring)
                 Button("Choose Strip Folder…") { strip.chooseFolder() }
                     .keyboardShortcut("o", modifiers: [.command, .shift])
             }

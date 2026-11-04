@@ -20,7 +20,6 @@ struct StripView: View {
         }
         .background(Self.background)
         .environment(\.colorScheme, .dark)
-        .onAppear { strip.start() }
     }
 
     private var header: some View {
@@ -64,9 +63,28 @@ struct StripView: View {
     @ViewBuilder
     private var content: some View {
         if strip.folder == nil {
-            emptyState(icon: "folder.badge.plus", title: "No folder",
-                       detail: "Choose a folder to list its images and videos here, including subfolders.",
-                       action: ("Choose Folder…", { strip.chooseFolder() }))
+            VStack(spacing: 10) {
+                Image(systemName: "folder.badge.plus")
+                    .font(.system(size: 30, weight: .light))
+                    .foregroundStyle(.secondary)
+                Text("No folder").font(.headline)
+                Text("Choose a folder to list its images and videos here, including subfolders.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button("Choose Folder…") { strip.chooseFolder() }
+                if LastView.shared.rememberedStripFolder != nil {
+                    Button {
+                        Task { await LastView.shared.restoreStripFolder() }
+                    } label: {
+                        Label("Restore Last Folder", systemImage: "touchid")
+                    }
+                    .help("Reopens the folder you used last time, after \(AppLock.methodName).")
+                    .disabled(LastView.shared.isRestoring)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let result = strip.result, result.count > 0 {
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 10, pinnedViews: [.sectionHeaders]) {

@@ -184,7 +184,6 @@ final class CanvasModel {
                 guard tiles[id] != nil else { return } // removed while loading
                 let video = LoopingVideo(asset: asset, duration: duration.isFinite ? duration : 0)
                 tiles[id]?.content = .video(video)
-                AppLock.shared.didLoad(video, id: id)
                 aspectArrived(id, aspect ?? 16.0 / 9.0)
             }
         }
@@ -357,8 +356,7 @@ final class CanvasModel {
     /// Starts a two-finger scrub on a video pane and shows its seek bar.
     @discardableResult
     func beginScrub(_ id: UUID) -> Bool {
-        guard !AppLock.shared.isLocked,
-              let video = tiles[id]?.video, video.duration > 0, let pane = paneRect(id) else { return false }
+        guard let video = tiles[id]?.video, video.duration > 0, let pane = paneRect(id) else { return false }
         video.beginScrub()
         selectedID = id
         withAnimation(.easeOut(duration: 0.1)) {
@@ -386,12 +384,11 @@ final class CanvasModel {
     /// Fingers lifted: hide the seek bar straight away and resume playback.
     func endScrub() {
         guard let s = scrub else { return }
-        if !AppLock.shared.isLocked { tiles[s.id]?.video?.endScrub() }
+        tiles[s.id]?.video?.endScrub()
         withAnimation(.easeOut(duration: 0.12)) { scrub = nil }
     }
 
     func togglePlay(_ id: UUID) {
-        guard !AppLock.shared.isLocked else { return } // nothing plays behind the lock screen
         tiles[id]?.video?.togglePlay()
     }
 

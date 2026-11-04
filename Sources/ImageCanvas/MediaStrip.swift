@@ -51,12 +51,15 @@ final class MediaStrip {
         defaults.removeObject(forKey: Key.visible) // no longer persisted: the app opens empty
         let savedWidth = defaults.object(forKey: Key.width) as? Double ?? 240
         width = min(max(CGFloat(savedWidth), Self.widthRange.lowerBound), Self.widthRange.upperBound)
-        if let path = defaults.string(forKey: Key.folder), FileManager.default.fileExists(atPath: path) {
-            folder = URL(fileURLWithPath: path, isDirectory: true)
+        // The folder is never remembered in plain preferences. It's kept only in the last-view
+        // file and comes back behind Touch ID. Move an old plain setting there once, then drop it.
+        if let path = defaults.string(forKey: Key.folder) {
+            LastView.shared.rememberStripFolder(path)
+            defaults.removeObject(forKey: Key.folder)
         }
     }
 
-    /// Scans the remembered folder on launch.
+    /// Scans the current folder if it hasn't been yet.
     func start() {
         if folder != nil, result == nil, !isScanning { rescan() }
     }
@@ -75,18 +78,20 @@ final class MediaStrip {
 
     func setFolder(_ url: URL) {
         folder = url
-        UserDefaults.standard.set(url.path, forKey: Key.folder)
+        LastView.shared.rememberStripFolder(url.path)
         isVisible = true
         rescan()
     }
 
-    func clearFolder() {
+    /// Hides the strip and forgets the folder and its listing for this session (privacy
+    /// clear). The folder can come back via Restore Last View / Restore Last Folder.
+    func close() {
         scanTask?.cancel()
         generation += 1
+        isVisible = false
         folder = nil
         result = nil
         isScanning = false
-        UserDefaults.standard.removeObject(forKey: Key.folder)
     }
 
     /// Re-reads the folder (also picks up files added since).
@@ -126,6 +131,11 @@ final class ThumbnailCache {
 
     func cached(_ url: URL) -> NSImage? {
         cache.object(forKey: url as NSURL)
+    }
+
+    /// Drops every thumbnail held in memory (privacy clear).
+    func removeAll() {
+        cache.removeAllObjects()
     }
 
     func thumbnail(for url: URL, side: CGFloat, scale: CGFloat) async -> NSImage? {

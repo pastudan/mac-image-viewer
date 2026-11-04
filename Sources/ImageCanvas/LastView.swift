@@ -2,11 +2,12 @@ import AppKit
 import CanvasCore
 import Observation
 
-/// The previous session's view, saved continuously and only brought back on request,
-/// behind Touch ID. The app always opens empty: no canvas, no strip.
+/// The previous view, saved continuously and only brought back on request, behind Touch ID.
+/// The app always opens empty, and it is emptied again whenever the Mac locks or sleeps.
 ///
 /// Stored as JSON in ~/Library/Application Support/Image Canvas/Last View.json, the same
 /// place as saved layouts. It records file paths and arrangement, not the images themselves.
+/// It is also the only place the strip's folder is remembered.
 @MainActor
 @Observable
 final class LastView {
@@ -24,7 +25,12 @@ final class LastView {
     /// Replaceable for the self-test, which can't touch the sensor.
     var authenticator: (String) async -> AppLock.AuthResult = AppLock.systemAuthenticate
     /// Where the snapshot lives; the self-test points this at a scratch file.
-    var fileURL: URL
+    var fileURL: URL {
+        didSet { rememberedStripFolder = load()?.stripFolder }
+    }
+    /// The strip folder remembered in the snapshot (kept in memory so the strip can show its
+    /// "Restore Last Folder" button without reading the file on every redraw).
+    private(set) var rememberedStripFolder: String?
 
     /// Snapshots aren't written until the user has done something this session, so
     /// opening the app empty and quitting doesn't erase the previous view.
@@ -34,6 +40,7 @@ final class LastView {
     init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         fileURL = support.appendingPathComponent("Image Canvas/Last View.json")
+        rememberedStripFolder = load()?.stripFolder
     }
 
     var hasSnapshot: Bool { FileManager.default.fileExists(atPath: fileURL.path) }
@@ -59,9 +66,25 @@ final class LastView {
         let model = CanvasModel.shared
         let strip = MediaStrip.shared
         guard !model.isEmpty || strip.isVisible else { return }
+        // Keep the remembered strip folder even when the strip isn't open right now.
         let snapshot = Snapshot(document: model.makeDocument(name: "Last View"),
                                 stripVisible: strip.isVisible,
-                                stripFolder: strip.folder?.path)
+                                stripFolder: strip.folder?.path ?? load()?.stripFolder)
+        write(snapshot)
+    }
+
+    /// Records the strip's folder (only here, never in plain preferences) without touching
+    /// the saved canvas.
+    func rememberStripFolder(_ path: String) {
+        var snapshot = load() ?? Snapshot(document: LayoutDocument(name: "Last View", savedAt: Date(),
+                                                                   cropToFill: false, items: [], layout: nil),
+                                          stripVisible: false, stripFolder: nil)
+        snapshot.stripFolder = path
+        write(snapshot)
+    }
+
+    private func write(_ snapshot: Snapshot) {
+        rememberedStripFolder = snapshot.stripFolder
         do {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
@@ -85,23 +108,42 @@ final class LastView {
 
     /// File > Restore Last View: Touch ID first, then bring the canvas and strip back.
     func restore() async {
-        guard !isRestoring, !AppLock.shared.isLocked else { return }
-        guard let snapshot = load() else {
+        guard !isRestoring else { return }
+        guard let snapshot = load(), !snapshot.document.items.isEmpty || snapshot.stripFolder != nil else {
             message = "There's no previous view to restore."
             showMessage()
             return
         }
+        guard await authenticate("restore your last view") else { return }
+        apply(snapshot)
+    }
+
+    /// The strip's "Restore Last Folder" button: Touch ID, then reopen the remembered folder.
+    func restoreStripFolder() async {
+        guard !isRestoring else { return }
+        guard let path = rememberedStripFolder, FileManager.default.fileExists(atPath: path) else {
+            message = "There's no previous strip folder to restore."
+            showMessage()
+            return
+        }
+        guard await authenticate("show your last strip folder") else { return }
+        MediaStrip.shared.setFolder(URL(fileURLWithPath: path, isDirectory: true))
+    }
+
+    private func authenticate(_ reason: String) async -> Bool {
         isRestoring = true
         defer { isRestoring = false }
-        switch await authenticator("restore your last view") {
+        switch await authenticator(reason) {
         case .success:
-            apply(snapshot)
             message = nil
+            return true
         case .cancelled:
             message = nil
+            return false
         case .failed(let reason):
             message = reason
             showMessage()
+            return false
         }
     }
 
@@ -110,7 +152,8 @@ final class LastView {
         if let path = snapshot.stripFolder, FileManager.default.fileExists(atPath: path) {
             if strip.folder?.path != path { strip.setFolder(URL(fileURLWithPath: path, isDirectory: true)) }
         }
-        strip.isVisible = snapshot.stripVisible
+        // A snapshot with only a folder (no pictures) means: show the strip.
+        strip.isVisible = snapshot.stripVisible || (snapshot.document.items.isEmpty && strip.folder != nil)
         if !snapshot.document.items.isEmpty {
             LayoutStore.shared.forgetCurrent()
             let missing = CanvasModel.shared.apply(snapshot.document)
@@ -124,7 +167,7 @@ final class LastView {
     private func showMessage() {
         guard let message, !CommandLine.arguments.contains("--self-test") else { return }
         let alert = NSAlert()
-        alert.messageText = "Couldn't restore the last view"
+        alert.messageText = "Couldn't restore"
         alert.informativeText = message
         alert.runModal()
     }
@@ -132,5 +175,6 @@ final class LastView {
     /// Forget the saved view (e.g. after restoring is no longer wanted).
     func forget() {
         try? FileManager.default.removeItem(at: fileURL)
+        rememberedStripFolder = nil
     }
 }

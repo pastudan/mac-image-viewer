@@ -73,14 +73,10 @@ enum SelfTest {
                 // strip, but only after pointing it at the test folder below.
                 MediaStrip.shared.hiddenForCapture = true
                 if args.contains("--hold-strip"), let folderArg = args.firstIndex(of: "--strip-folder") {
-                    // Strip showing the folder, with a couple of items already on the canvas.
-                    // The user's own strip folder setting is put back afterwards.
+                    // Strip showing the test folder, with a couple of items already on the canvas.
+                    // (The folder is remembered only in the scratch last-view file.)
                     let strip = MediaStrip.shared
-                    let defaults = UserDefaults.standard
-                    let savedFolder = defaults.string(forKey: "strip.folderPath")
                     strip.setFolder(URL(fileURLWithPath: args[folderArg + 1]))
-                    if let savedFolder { defaults.set(savedFolder, forKey: "strip.folderPath") }
-                    else { defaults.removeObject(forKey: "strip.folderPath") }
                     await strip.waitForScan()
                     strip.hiddenForCapture = false // now showing only the test folder
                     model.removeAll()
@@ -129,7 +125,8 @@ enum SelfTest {
                 if holdFit {
                     // Nothing else; just the arrangement.
                 } else if args.contains("--hold-locked") {
-                    AppLock.shared.lock()
+                    // What the window looks like right after the Mac locked.
+                    AppLock.shared.clearNow()
                 } else if let id = model.layout?.ids.first, let pane = model.paneRect(id) {
                     if model.tiles[id]?.video != nil {
                         if args.contains("--hold-hover") {
@@ -165,84 +162,90 @@ enum SelfTest {
 
     private struct Failure: Error, CustomStringConvertible { let description: String }
 
-    /// Sleep lock. Posts the real workspace sleep notification. Authentication is stubbed
-    /// because a test can't touch the sensor; the settings value is restored afterwards.
+    /// Privacy clear: posts the real "screen is locked" and sleep notifications the system
+    /// sends, and checks the canvas and strip are emptied, with the view kept for a
+    /// Touch ID restore. The setting is restored afterwards.
     private static func runLock(video: URL, image: URL?, record: (String, Bool, String) -> Void) async throws {
         let model = CanvasModel.shared
         let lock = AppLock.shared
-        let savedSetting = lock.requireOnWake
-        let savedAuth = lock.authenticator
-        let savedFront = lock.isFrontmost
+        let strip = MediaStrip.shared
+        let last = LastView.shared
+        let savedSetting = lock.clearOnLock
+        let savedAuth = last.authenticator
         defer {
-            lock.requireOnWake = savedSetting
-            lock.authenticator = savedAuth
-            lock.isFrontmost = savedFront
+            lock.clearOnLock = savedSetting
+            last.authenticator = savedAuth
         }
-        model.removeAll()
-        model.add(urls: [video] + (image.map { [$0] } ?? []))
-        for _ in 0..<100 where !(model.tiles.values.allSatisfy(\.isLoaded) && model.tiles.count >= 1) {
-            try await Task.sleep(for: .milliseconds(100))
+        record("listening for lock, sleep, screen saver and user switch", lock.isObserving,
+               "observers active=\(lock.isObserving)")
+
+        func fill() async throws {
+            model.removeAll()
+            model.add(urls: [video] + (image.map { [$0] } ?? []))
+            for _ in 0..<100 where !(model.tiles.values.allSatisfy(\.isLoaded) && model.tiles.count >= 1) {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            try await Task.sleep(for: .milliseconds(300))
         }
-        guard let videoID = model.tiles.values.first(where: { $0.video != nil })?.id,
-              let player = model.tiles[videoID]?.video else { throw Failure(description: "video never loaded") }
+        let screenLocked = {
+            DistributedNotificationCenter.default().postNotificationName(
+                Notification.Name("com.apple.screenIsLocked"), object: nil, userInfo: nil, deliverImmediately: true)
+        }
+
+        // Setting off: locking the screen leaves everything as it was.
+        try await fill()
+        lock.clearOnLock = false
+        screenLocked()
+        try await Task.sleep(for: .milliseconds(600))
+        record("screen lock with setting off leaves the canvas", model.tiles.count == (image == nil ? 1 : 2),
+               "tiles=\(model.tiles.count)")
+
+        // Setting on (the default): locking the screen empties the canvas and closes the strip.
+        lock.clearOnLock = true
+        let stripFolder = FileManager.default.temporaryDirectory.appendingPathComponent("selftest-lock-strip")
+        try? FileManager.default.createDirectory(at: stripFolder, withIntermediateDirectories: true)
+        strip.setFolder(stripFolder)
+        let countBefore = model.tiles.count
+        let clearedBefore = lock.lastClearedAt
+        screenLocked()
+        for _ in 0..<30 where lock.lastClearedAt == clearedBefore { try await Task.sleep(for: .milliseconds(100)) }
         try await Task.sleep(for: .milliseconds(300))
-        let sleep = { NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil) }
+        record("locking the screen empties the canvas and closes the strip",
+               model.isEmpty && !strip.isVisible && strip.folder == nil && strip.result == nil && countBefore > 0,
+               "tilesBefore=\(countBefore) tilesAfter=\(model.tiles.count) stripVisible=\(strip.isVisible) stripFolderKept=\(strip.folder != nil)")
 
-        // Setting off: sleeping does nothing.
-        lock.requireOnWake = false
-        sleep()
-        try await Task.sleep(for: .milliseconds(200))
-        record("sleep with setting off does not lock", !lock.isLocked && player.player.rate > 0,
-               "locked=\(lock.isLocked) rate=\(player.player.rate)")
+        // Sleep does the same.
+        try await fill()
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
+        try await Task.sleep(for: .milliseconds(300))
+        record("sleep empties the canvas too", model.isEmpty, "tiles=\(model.tiles.count)")
 
-        // Setting on: sleeping locks, hides the canvas and pauses video.
-        lock.requireOnWake = true
+        // What was showing comes back only through Touch ID.
         var prompts = 0
-        lock.authenticator = { _ in prompts += 1; return .cancelled }
-        sleep()
-        try await Task.sleep(for: .milliseconds(300))
-        let interactionGone = InteractionNSView.current?.window == nil
-        record("sleep with setting on locks, hides canvas, pauses video",
-               lock.isLocked && player.player.rate == 0 && interactionGone,
-               "locked=\(lock.isLocked) rate=\(player.player.rate) canvasViewRemoved=\(interactionGone)")
+        last.authenticator = { _ in prompts += 1; return .cancelled }
+        await last.restore()
+        let afterCancel = model.tiles.count
+        last.authenticator = { _ in prompts += 1; return .success }
+        await last.restore()
+        for _ in 0..<50 where model.tiles.count < 2 { try await Task.sleep(for: .milliseconds(100)) }
+        record("after locking, Restore Last View brings it back only with Touch ID",
+               afterCancel == 0 && prompts == 2 && model.tiles.count == (image == nil ? 1 : 2),
+               "tilesAfterCancel=\(afterCancel) tilesAfterTouchID=\(model.tiles.count) prompts=\(prompts)")
 
-        // Waking with the app in front prompts once; cancelling keeps it locked and
-        // reactivation after the cancel does not re-prompt.
-        NSApp.activate()
-        try await Task.sleep(for: .milliseconds(300))
-        let reallyActive = NSApp.isActive
-        // In the background: waking must not prompt.
-        lock.isFrontmost = { false }
-        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
-        try await Task.sleep(for: .milliseconds(600))
-        let whileBackground = prompts
-        // In front: waking prompts once.
-        lock.isFrontmost = { true }
-        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
-        try await Task.sleep(for: .milliseconds(600))
-        let afterWake = prompts
-        // After a cancel, the app becoming active again doesn't re-prompt.
-        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApp)
-        try await Task.sleep(for: .milliseconds(600))
-        model.togglePlay(videoID)
-        let stillPaused = player.player.rate == 0
-        record("wake prompts once only when in front; cancel stays locked; nothing plays behind lock",
-               whileBackground == 0 && afterWake == 1 && prompts == 1 && lock.isLocked && stillPaused,
-               "background=\(whileBackground) afterWake=\(afterWake) total=\(prompts) locked=\(lock.isLocked) paused=\(stillPaused) (test process really frontmost: \(reallyActive))")
-
-        // A failed attempt shows the reason and stays locked.
-        lock.authenticator = { _ in .failed("Touch ID didn't match.") }
-        await lock.unlock()
-        record("failed unlock stays locked with message", lock.isLocked && lock.message == "Touch ID didn't match.",
-               "locked=\(lock.isLocked) message=\(lock.message ?? "nil")")
-
-        // Success reveals the canvas and resumes the video.
-        lock.authenticator = { _ in .success }
-        await lock.unlock()
-        try await Task.sleep(for: .milliseconds(400))
-        record("successful unlock shows canvas and resumes video",
-               !lock.isLocked && player.player.rate > 0 && InteractionNSView.current?.window != nil,
-               "locked=\(lock.isLocked) rate=\(player.player.rate)")
+        // The strip folder isn't in plain preferences, and needs Touch ID to come back.
+        strip.close()
+        let plainPref = UserDefaults.standard.string(forKey: "strip.folderPath")
+        last.authenticator = { _ in prompts += 1; return .cancelled }
+        await last.restoreStripFolder()
+        let afterCancelFolder = strip.folder
+        last.authenticator = { _ in prompts += 1; return .success }
+        await last.restoreStripFolder()
+        let restoredFolder = strip.folder?.lastPathComponent
+        record("strip folder needs Touch ID to come back and isn't kept in preferences",
+               plainPref == nil && afterCancelFolder == nil && restoredFolder == stripFolder.lastPathComponent && strip.isVisible,
+               "inPrefs=\(plainPref != nil) afterCancel=\(afterCancelFolder?.lastPathComponent ?? "nil") afterTouchID=\(restoredFolder ?? "nil")")
+        strip.close()
+        try? FileManager.default.removeItem(at: stripFolder)
     }
 
     /// Restore Last View: the session is remembered as you go, and comes back only after
@@ -305,20 +308,6 @@ enum SelfTest {
         }
         record("after Touch ID the last view comes back exactly", same && prompts == 3,
                "panes before=\(before.count) after=\(after.count) prompts=\(prompts)")
-
-        // Locked app: restore does nothing and doesn't prompt.
-        let lock = AppLock.shared
-        let savedLockAuth = lock.authenticator
-        lock.authenticator = { _ in .cancelled }
-        defer { lock.authenticator = savedLockAuth }
-        model.removeAll()
-        lock.lock()
-        await last.restore()
-        let whileLocked = model.tiles.count
-        lock.authenticator = { _ in .success }
-        await lock.unlock()
-        record("restore is blocked while the app is locked", whileLocked == 0 && prompts == 3,
-               "tilesWhileLocked=\(whileLocked) prompts=\(prompts)")
     }
 
     /// Best fit on pictures of mixed shapes: much less black than an even split, every
@@ -387,17 +376,12 @@ enum SelfTest {
 
     /// The folder strip: scanning, the strip on screen, and dragging an item onto the canvas.
     /// The drag payload is the exact provider the strip hands to AppKit, written to a real
-    /// pasteboard and read back by the canvas's drop code. The previous folder setting is restored.
+    /// pasteboard and read back by the canvas's drop code. The folder is remembered only in
+    /// the scratch last-view file, never the user's.
     private static func runStrip(folder: URL, record: (String, Bool, String) -> Void) async throws {
         let model = CanvasModel.shared
         let strip = MediaStrip.shared
-        let defaults = UserDefaults.standard
-        let savedFolder = defaults.string(forKey: "strip.folderPath")
-        defer {
-            if let savedFolder { defaults.set(savedFolder, forKey: "strip.folderPath") }
-            else { defaults.removeObject(forKey: "strip.folderPath") }
-            strip.isVisible = false
-        }
+        defer { strip.close() }
 
         model.removeAll()
         strip.setFolder(folder)

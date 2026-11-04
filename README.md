@@ -33,7 +33,7 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
   - **Drag** any thumbnail onto the canvas and it lands wherever you drop it, just like dragging from Finder. **Double-click** a thumbnail to add it straight away.
   - Drag the bar on the strip's right edge to resize it.
   - To hide it, click the **«** button at the top of the strip. The **sidebar button** in the title bar hides and shows it, and so does **View > Hide/Show Strip** (Ctrl-Cmd-S). The strip is always hidden when the app opens.
-  - The folder is remembered between launches. Use the refresh button to pick up new files.
+  - Use the refresh button to pick up new files. The folder only comes back after Touch ID (see below).
 - **Drag a pane** and a blue preview shows where it will land:
   - Over another pane's **edge**, it splits that pane and takes that side.
   - Over another pane's **centre**, the two panes swap places.
@@ -73,17 +73,18 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
 - Image Canvas always opens **empty**, with no images and no strip.
 - **File > Restore Last View** (Shift-Cmd-R) brings back where you left off: the same pictures, pane sizes, zoom and strip. It asks for **Touch ID** first, or your Mac password. Cancelling or a failed fingerprint shows nothing.
 - The last view is saved as you work, and when you quit, to `~/Library/Application Support/Image Canvas/Last View.json`. It holds file paths and the arrangement, not the pictures themselves. Opening the app and quitting without doing anything leaves the previous saved view alone.
-- **Restore Last View** is unavailable while the app is locked.
+## Privacy: emptied when the Mac locks
 
-## Privacy lock (optional)
+This is on by default. **Image Canvas > Settings… > Privacy** turns it off.
 
-**Image Canvas > Settings… (Cmd-,) > Require Touch ID to show images after the Mac sleeps.** It's off by default.
+- When you **lock the screen** (Ctrl-Cmd-Q, or the lid), the **Mac sleeps**, the **screen saver** starts or you **switch user**, Image Canvas saves what was open and then **empties the window**. The canvas is cleared, the strip is closed, and its folder and thumbnails are dropped from memory.
+- After you unlock, the window is empty. **Shift-Cmd-R** (File > Restore Last View) brings everything back after **Touch ID**, or your Mac password.
+- **Image Canvas > Clear for Privacy** (Ctrl-Cmd-L) does the same thing right away.
 
-- When it's on and the Mac sleeps, the canvas is replaced by a lock screen and videos pause. Your images aren't drawn behind it at all.
-- On wake, if Image Canvas is the app in front, it asks for Touch ID straight away. Otherwise click **Unlock with Touch ID**. Your Mac password works as a fallback.
-- **Also lock when the screen locks or the screen saver starts** is on by default once the main setting is on, because closing the lid often locks the screen without a full sleep.
-- **Image Canvas > Lock Now** (Ctrl-Cmd-L) locks immediately.
-- Macs don't have Face ID. On a Mac without Touch ID, the password is used instead.
+## The strip's folder
+
+- The strip's folder is **not** remembered in the app's preferences. It's kept only in the last-view file, and it always takes **Touch ID** to come back.
+- With the strip open and no folder, you can **Choose Folder…** or click **Restore Last Folder**, which asks for Touch ID. **Restore Last View** also brings it back.
 
 ## Development
 

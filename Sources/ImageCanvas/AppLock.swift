@@ -2,9 +2,10 @@ import AppKit
 import LocalAuthentication
 import Observation
 
-/// Optional privacy lock: when the Mac sleeps (and, optionally, when the screen locks or the
-/// screen saver starts), the canvas is hidden and videos pause until the user unlocks with
-/// Touch ID, or their Mac password as a fallback.
+/// Privacy: when the Mac locks, sleeps, starts the screen saver or switches user, the
+/// current view is saved and then the canvas and strip are emptied. Nothing stays in
+/// memory to be revealed. Getting it back is File > Restore Last View (Shift-Cmd-R),
+/// which asks for Touch ID. On by default; Settings > Privacy turns it off.
 @MainActor
 @Observable
 final class AppLock {
@@ -17,41 +18,36 @@ final class AppLock {
     }
 
     private enum Key {
-        static let requireOnWake = "lock.requireAuthAfterSleep"
-        static let lockWithScreen = "lock.alsoWhenScreenLocks"
+        static let clearOnLock = "privacy.clearOnLock"
+        /// Settings from the earlier lock-screen design; removed on launch.
+        static let legacy = ["lock.requireAuthAfterSleep", "lock.alsoWhenScreenLocks"]
     }
 
-    /// Settings > Require Touch ID after sleep. Off by default.
-    var requireOnWake: Bool {
-        didSet { UserDefaults.standard.set(requireOnWake, forKey: Key.requireOnWake) }
+    /// Settings > Privacy: clear the canvas and strip when the Mac locks or sleeps.
+    var clearOnLock: Bool {
+        didSet { UserDefaults.standard.set(clearOnLock, forKey: Key.clearOnLock) }
     }
 
-    /// Also lock when the screen locks or the screen saver starts. On by default once the
-    /// main setting is on, because closing the lid often locks the screen without a full sleep.
-    var lockWithScreen: Bool {
-        didSet { UserDefaults.standard.set(lockWithScreen, forKey: Key.lockWithScreen) }
-    }
+    /// When the canvas was last cleared for privacy (for the self-test and diagnostics).
+    private(set) var lastClearedAt: Date?
 
-    private(set) var isLocked = false
-    private(set) var isAuthenticating = false
-    private(set) var message: String?
-
-    /// Replaceable for the self-test, which can't put a finger on the sensor.
-    var authenticator: (String) async -> AuthResult = AppLock.systemAuthenticate
-    /// Only prompt when Image Canvas is the app in front; replaceable for the self-test,
-    /// which is launched from a shell and may not be allowed to come to the front.
-    var isFrontmost: () -> Bool = { NSApp.isActive }
-
-    private var suspendedVideos: Set<UUID> = []
-    /// Prompt automatically once per lock. After a cancel, the app becoming active again
-    /// (which happens when the system prompt closes) must not pop the prompt straight back up.
-    private var autoPromptArmed = false
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
+
+    /// The system events that clear the canvas, as (centre, name) pairs.
+    static var triggers: [(isDistributed: Bool, name: Notification.Name)] {
+        [
+            (false, NSWorkspace.willSleepNotification),
+            (false, NSWorkspace.screensDidSleepNotification),
+            (false, NSWorkspace.sessionDidResignActiveNotification),
+            (true, Notification.Name("com.apple.screenIsLocked")),
+            (true, Notification.Name("com.apple.screensaver.didstart")),
+        ]
+    }
 
     init() {
         let defaults = UserDefaults.standard
-        requireOnWake = defaults.bool(forKey: Key.requireOnWake)
-        lockWithScreen = defaults.object(forKey: Key.lockWithScreen) as? Bool ?? true
+        for key in Key.legacy { defaults.removeObject(forKey: key) }
+        clearOnLock = defaults.object(forKey: Key.clearOnLock) as? Bool ?? true
     }
 
     /// "Touch ID" on Macs that have it, otherwise "Password".
@@ -61,100 +57,38 @@ final class AppLock {
         return context.biometryType == .touchID ? "Touch ID" : "Password"
     }
 
-    // MARK: Watching for sleep
+    // MARK: Watching for lock and sleep
 
     func startObserving() {
         guard observers.isEmpty else { return }
-        let workspace = NSWorkspace.shared.notificationCenter
-        let distributed = DistributedNotificationCenter.default()
-
-        // Going to sleep: lock before the display goes dark so nothing shows on wake.
-        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
-                     NSWorkspace.sessionDidResignActiveNotification] {
-            observe(workspace, name) { $0.lockIfEnabled(screenEvent: false) }
-        }
-        for name in ["com.apple.screenIsLocked", "com.apple.screensaver.didstart"] {
-            observe(distributed, Notification.Name(name)) { $0.lockIfEnabled(screenEvent: true) }
-        }
-
-        // Waking up: offer Touch ID straight away if the app is in front.
-        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification,
-                     NSWorkspace.sessionDidBecomeActiveNotification] {
-            observe(workspace, name) { $0.promptIfFrontmost() }
-        }
-        observe(distributed, Notification.Name("com.apple.screenIsUnlocked")) { $0.promptIfFrontmost() }
-        observe(NotificationCenter.default, NSApplication.didBecomeActiveNotification) { $0.promptIfFrontmost() }
-    }
-
-    private func observe(_ center: NotificationCenter, _ name: Notification.Name,
-                         _ action: @escaping @MainActor (AppLock) -> Void) {
-        let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                action(self)
+        for trigger in Self.triggers {
+            let center: NotificationCenter = trigger.isDistributed
+                ? DistributedNotificationCenter.default()
+                : NSWorkspace.shared.notificationCenter
+            let token = center.addObserver(forName: trigger.name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.systemWillHide() }
             }
-        }
-        observers.append((center, token))
-    }
-
-    private func lockIfEnabled(screenEvent: Bool) {
-        guard requireOnWake, !screenEvent || lockWithScreen else { return }
-        lock()
-    }
-
-    // MARK: Locking
-
-    /// Hides the canvas and pauses every playing video.
-    func lock() {
-        guard !isLocked else { return }
-        let model = CanvasModel.shared
-        isLocked = true // first, so nothing below can restart playback
-        model.endScrub()
-        model.hoveredID = nil
-        for tile in model.tiles.values {
-            guard let video = tile.video else { continue }
-            video.suspend()
-            suspendedVideos.insert(tile.id)
-        }
-        message = nil
-        autoPromptArmed = true
-    }
-
-    /// A video that finished loading while locked must not play behind the lock screen.
-    func didLoad(_ video: LoopingVideo, id: UUID) {
-        guard isLocked else { return }
-        video.suspend()
-        suspendedVideos.insert(id)
-    }
-
-    func promptIfFrontmost() {
-        guard isLocked, autoPromptArmed, isFrontmost(), !isAuthenticating else { return }
-        autoPromptArmed = false
-        // Give the window a moment to come forward so the prompt attaches to it.
-        Task {
-            try? await Task.sleep(for: .milliseconds(250))
-            await unlock()
+            observers.append((center, token))
         }
     }
 
-    /// Asks for Touch ID (or the password) and reveals the canvas on success.
-    func unlock() async {
-        guard isLocked, !isAuthenticating else { return }
-        isAuthenticating = true
-        message = nil
-        let result = await authenticator("show your images again")
-        isAuthenticating = false
-        switch result {
-        case .success:
-            isLocked = false
-            let model = CanvasModel.shared
-            for id in suspendedVideos { model.tiles[id]?.video?.resume() }
-            suspendedVideos.removeAll()
-        case .cancelled:
-            message = nil
-        case .failed(let reason):
-            message = reason
-        }
+    var isObserving: Bool { observers.count == Self.triggers.count }
+
+    /// The Mac is locking, sleeping or handing over to another user.
+    func systemWillHide() {
+        guard clearOnLock else { return }
+        clearNow()
+    }
+
+    /// Saves the current view (so Restore Last View can bring it back behind Touch ID),
+    /// then empties the canvas and closes the strip, dropping its folder and thumbnails.
+    func clearNow() {
+        LastView.shared.saveNow()
+        CanvasModel.shared.removeAll()
+        LayoutStore.shared.forgetCurrent()
+        MediaStrip.shared.close()
+        ThumbnailCache.shared.removeAll()
+        lastClearedAt = Date()
     }
 
     // MARK: Authentication
