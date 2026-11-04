@@ -34,6 +34,9 @@ struct LockScreenView: View {
             }
             .padding(40)
         }
+        // The background is always near-black, so draw the text as on a dark background
+        // even when the Mac is in Light Mode.
+        .environment(\.colorScheme, .dark)
         .contentShape(Rectangle())
     }
 }

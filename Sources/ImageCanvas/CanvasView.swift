@@ -86,21 +86,25 @@ private struct DropPreviewView: View {
     }
 }
 
+/// Shown on the empty canvas. The canvas is always near-black, so the text uses fixed light
+/// greys rather than system label colours, which turn dark grey when the Mac is in Light Mode.
 private struct EmptyStateView: View {
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "rectangle.split.2x2")
                 .font(.system(size: 44, weight: .light))
+                .foregroundStyle(Color(white: 0.75))
             Text("Open images or videos from Finder, or drop them here")
-                .font(.title3)
+                .font(.title3.weight(.medium))
+                .foregroundStyle(Color(white: 0.92))
             Text("Everything you open shares the window like panes of stained glass.\nDrag a pane onto another to split it, or to an edge or corner to snap it.")
                 .font(.callout)
                 .multilineTextAlignment(.center)
+                .foregroundStyle(Color(white: 0.72))
             Text("Shift-Command-R restores your last view (Touch ID required).")
                 .font(.callout)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(white: 0.58))
                 .padding(.top, 6)
         }
-        .foregroundStyle(.secondary)
     }
 }
