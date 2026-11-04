@@ -48,6 +48,7 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
   - **Cmd = / Cmd - / Cmd 0** zoom the selected pane in, out, or back to fit.
 - **Double-click** a pane to expand it to the whole window, and double-click again to return.
 - **File > Save Layout…** (Cmd-S) saves the open files, the pane arrangement and each pane's zoom. **File > Open Layout** restores one, and **File > Show Layouts Folder** shows where they're kept: `~/Library/Application Support/Image Canvas/Layouts/` (one JSON file each). Panes whose files have since moved are skipped, and you're told which ones.
+  - After you open (or save) a layout, **Cmd-S** fills in that layout's name, so pressing Return overwrites it. The dialog says so in orange, shows when it was last saved, and the button reads **Overwrite**. Type a different name and it switches to **Save**, to save a new layout instead.
 - **Best fit:** the app looks at each picture's shape and picks the arrangement, order and pane sizes that leave the least black around them:
   - Tall phone photos get tall panes and panoramas get wide ones.
   - Each picture may also be trimmed by up to 10% at its edges to close the last gaps. Change this in **Settings > Layout**, from 0% to 25%.

@@ -112,6 +112,7 @@ final class LastView {
         }
         strip.isVisible = snapshot.stripVisible
         if !snapshot.document.items.isEmpty {
+            LayoutStore.shared.forgetCurrent()
             let missing = CanvasModel.shared.apply(snapshot.document)
             if !missing.isEmpty {
                 NSLog("Image Canvas: \(missing.count) file(s) from the last view are missing")

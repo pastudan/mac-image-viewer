@@ -80,7 +80,7 @@ struct ImageCanvasApp: App {
                 Button("Remove Selected") { model.removeSelected() }
                     .keyboardShortcut(.delete, modifiers: [])
                     .disabled(model.selectedID == nil)
-                Button("Clear Canvas") { model.removeAll() }
+                Button("Clear Canvas") { model.removeAll(); layouts.forgetCurrent() }
                     .keyboardShortcut(.delete, modifiers: [.command, .shift])
                     .disabled(model.isEmpty)
             }

@@ -109,6 +109,23 @@ enum SelfTest {
                 } else {
                     model.evenOut()
                 }
+                if args.contains("--hold-save-dialog") {
+                    // Open a layout from a scratch folder, then show the Save Layout dialog
+                    // (the overwrite case). The user's real layouts folder is never touched.
+                    let store = LayoutStore.shared
+                    store.directory = FileManager.default.temporaryDirectory.appendingPathComponent("selftest-dialog-layouts")
+                    if let doc = try? store.save(model.makeDocument(name: "Trip Board")),
+                       let entry = store.entries.first(where: { $0.url.lastPathComponent == doc.lastPathComponent }) {
+                        store.open(entry, into: model)
+                    }
+                    NSApp.activate()
+                    try? await Task.sleep(for: .milliseconds(500))
+                    try? "ready".write(to: report.appendingPathExtension("frames"), atomically: true, encoding: .utf8)
+                    store.promptSave(model) // modal; the capture is taken while it's up, then it's dismissed
+                    try? FileManager.default.removeItem(at: store.directory)
+                    NSApp.terminate(nil)
+                    return
+                }
                 if holdFit {
                     // Nothing else; just the arrangement.
                 } else if args.contains("--hold-locked") {
@@ -737,6 +754,18 @@ enum SelfTest {
         }
         record("save then open layout restores panes, sizes and zoom", same,
                "file=\(url.lastPathComponent) panes=\(framesAfter.count)")
+
+        // 10. Saving again after opening it: the dialog starts on the same name, which
+        // overwrites it, and a new name doesn't.
+        let suggested = store.defaultSaveName()
+        let sameTarget = store.saveTarget(for: suggested)
+        let newTarget = store.saveTarget(for: "Self Test (copy)")
+        store.forgetCurrent()
+        let freshName = store.defaultSaveName()
+        record("re-saving an opened layout defaults to overwriting it",
+               suggested == "Self Test" && sameTarget.willOverwrite && !newTarget.willOverwrite
+                   && freshName.hasPrefix("Layout "),
+               "suggested=\(suggested) overwrites=\(sameTarget.willOverwrite) newNameOverwrites=\(newTarget.willOverwrite) afterClear=\(freshName)")
         try? FileManager.default.removeItem(at: store.directory)
     }
 }
