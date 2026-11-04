@@ -45,6 +45,15 @@ struct StripView: View {
                         .help("Rescan folder")
                 }
             }
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) { strip.isVisible = false }
+            } label: {
+                Image(systemName: "chevron.left.2")
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Hide strip (Control-Command-S)")
         }
         .font(.callout.weight(.semibold))
         .foregroundStyle(.primary)

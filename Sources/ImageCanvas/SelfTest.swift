@@ -456,6 +456,18 @@ enum SelfTest {
         model.add(urls: [all[0].url])
         try await Task.sleep(for: .milliseconds(200))
         record("adding from the strip again adds another pane", model.tiles.count == 4, "tiles=\(model.tiles.count)")
+
+        // Collapse button / title-bar toggle: hiding gives the canvas the full width.
+        let shownX = canvasView.convert(canvasView.bounds, to: nil).minX
+        strip.isVisible = false
+        try await Task.sleep(for: .milliseconds(500))
+        let hiddenX = InteractionNSView.current.map { $0.convert($0.bounds, to: nil).minX } ?? -1
+        strip.isVisible = true
+        try await Task.sleep(for: .milliseconds(500))
+        let reshownX = InteractionNSView.current.map { $0.convert($0.bounds, to: nil).minX } ?? -1
+        record("hiding the strip collapses it to the left; showing brings it back",
+               shownX > 140 && hiddenX == 0 && abs(reshownX - shownX) < 1,
+               "canvas x: shown=\(Int(shownX)) hidden=\(Int(hiddenX)) reshown=\(Int(reshownX))")
     }
 
     /// Mouse hover shows the video bar; clicking and dragging on its track seeks.

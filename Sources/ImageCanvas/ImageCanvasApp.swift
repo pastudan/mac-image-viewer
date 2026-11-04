@@ -31,6 +31,22 @@ struct ImageCanvasApp: App {
                             .frame(minWidth: 320)
                             .layoutPriority(1)
                     }
+                    .transition(.identity)
+                    .animation(.easeOut(duration: 0.18), value: strip.isVisible)
+                }
+            }
+            .toolbar {
+                // Title-bar button that hides and shows the strip; always there, so a hidden
+                // strip is one click away. Not shown while locked.
+                if !lock.isLocked {
+                    ToolbarItem(placement: .navigation) {
+                        Button {
+                            withAnimation(.easeOut(duration: 0.18)) { strip.isVisible.toggle() }
+                        } label: {
+                            Image(systemName: "sidebar.left")
+                        }
+                        .help(strip.isVisible ? "Hide strip (Control-Command-S)" : "Show strip (Control-Command-S)")
+                    }
                 }
             }
             .frame(minWidth: 480, minHeight: 320)

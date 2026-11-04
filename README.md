@@ -32,7 +32,7 @@ Manual fallback: in Finder, select a file, **Get Info** (Cmd-I),
   - Scroll up and down through them.
   - **Drag** any thumbnail onto the canvas and it lands wherever you drop it, just like dragging from Finder. **Double-click** a thumbnail to add it straight away.
   - Drag the bar on the strip's right edge to resize it.
-  - **View > Hide/Show Strip** (Ctrl-Cmd-S). The strip is always hidden when the app opens.
+  - To hide it, click the **«** button at the top of the strip. The **sidebar button** in the title bar hides and shows it, and so does **View > Hide/Show Strip** (Ctrl-Cmd-S). The strip is always hidden when the app opens.
   - The folder is remembered between launches. Use the refresh button to pick up new files.
 - **Drag a pane** and a blue preview shows where it will land:
   - Over another pane's **edge**, it splits that pane and takes that side.
